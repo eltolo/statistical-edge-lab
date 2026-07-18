@@ -48,8 +48,8 @@ def roundtrip_cost_total(cost_config: dict, market: str = "argentina") -> float:
     Returns decimal (e.g., 0.0196 = 1.96%).
     """
     per_side = roundtrip_cost_per_side(cost_config, market)
-    # Minimum floor
-    minimum = cost_config.get(market, {}).get("minimum_total_roundtrip", 0.015)
+    # Per-market minimum floor (default 0 = no floor)
+    minimum = cost_config.get(market, {}).get("minimum_total_roundtrip", 0.0)
     total = per_side * 2
     return max(total, minimum)
 
