@@ -36,21 +36,30 @@ El lab asigna hasta CANDIDATE. PAPER_READY lo asigna el pipeline de estrategias.
 
 | Módulo | Fase | Estado |
 |--------|------|--------|
-| `src/data_loader.py` | 1 | ❌ |
-| `src/data_validator.py` | 1 | ❌ |
-| `src/currency_adjustment.py` | 1 | ❌ |
-| `src/forward_returns.py` | 1 | ❌ |
-| `src/feature_engine.py` | 2 | ❌ |
-| `src/event_detector.py` | 2 | ❌ |
-| `src/regime_detector.py` | 3 | ❌ |
-| `src/baseline_comparator.py` | 3 | ❌ |
-| `src/cost_model.py` | 3 | ❌ |
-| `src/robustness.py` | 4 | ❌ |
-| `src/validator.py` | 4 | ❌ |
-| `src/report_generator.py` | 5 | ❌ |
-| `run_experiment.py` | 5 | ❌ |
-| Tests | 5 | ❌ |
-| EXP-001 a EXP-005 | 5 | ❌ |
+| `src/data_loader.py` | 1 — Carga | ✅ + cache metadata + CCL proxy |
+| `src/data_validator.py` | 1 — Validación | ✅ 7 checks + DataQualityReport |
+| `src/currency_adjustment.py` | 1 — Moneda | ✅ ARS→USD via CCL, fail si falta |
+| `src/forward_returns.py` | 1 — Retornos | ✅ next_open default, MFE/MAE desde high/low |
+| `src/feature_engine.py` | 2 — Features | ✅ SMA/RSI/ATR/zscore/BB/MACD/compute_all_features |
+| `src/event_detector.py` | 2 — Eventos | ✅ condiciones lista, cooldown por sesiones |
+| `src/regime_detector.py` | 3 — Regímenes | ✅ BULL/BEAR/NEUTRAL + LOW/NORMAL/HIGH_VOL |
+| `src/baseline_comparator.py` | 3 — Baselines | ✅ exact trend+vol match, pool status (Q4) |
+| `src/cost_model.py` | 3 — Costos | ✅ Argentina 1.96% RT, USA, ROFEX + break-even |
+| `src/robustness.py` | 4 — Robustez | ✅ bootstrap/LOO/profit conc. por horizonte |
+| `src/validator.py` | 4 — Split | ✅ temporal cronológico + boundary-crossing purge (Q3) |
+| `src/report_generator.py` | 5 — Reportes | ✅ summary.md + make_decision + coverage |
+| `run_experiment.py` | 5 — CLI | ✅ pipeline 13 pasos + --list/--show |
+| Tests | 5 | ✅ 41 tests (pytest) |
+
+## Experimentos ejecutados
+
+| Exp | Eventos | Decisión | Nota |
+|:---:|:-------:|:--------:|------|
+| EXP-01: Moderate Pullback | 287 | ❌ REJECTED | Neto -1.41%, costos BYMA lo matan |
+| EXP-02: Pullback With Volume | 74 | ❌ REJECTED | Misma familia, sample chico |
+| EXP-03: Volatility Compression | 1,024 | 🔬 RESEARCH | Coverage baseline 6.5% (evento raro) |
+| EXP-04: Breakout From Compression | 285 | 🔬 RESEARCH | 20d +4.18% neto, concentrado en CEPU |
+| EXP-05: Extreme Decline | 233 | ❌ REJECTED | Neto -0.30% con costos equities (Q5) |
 
 ---
 

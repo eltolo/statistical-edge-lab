@@ -1,41 +1,86 @@
-# Statistical Edge Lab — Resultados Preliminares
+# Statistical Edge Lab
 
-## Resumen ejecutivo
+Laboratorio reusable para evaluar si un evento de mercado definido explícitamente produce un edge estadístico real, repetible y tradeable.
 
-Se ejecutaron 4 de 5 experimentos sobre 8 acciones argentinas (2015-2026).
-Pipeline corregido: features en USD, entry next_open, costos por evento, split temporal.
+**⚠️ Esto NO es un buscador automático de patrones.** El humano define qué testear; el lab responde si funciona.
 
-| Experimento | Eventos | Decisión Equity | Decisión Futuros (0.46% RT) |
-|-------------|---------|:---:|:---:|
-| EXP-01: Moderate Pullback | 287 | ❌ REJECTED | ❌ REJECTED |
-| EXP-03: Volatility Compression | 1,024 | 🔬 RESEARCH | 🔬 RESEARCH |
-| EXP-04: Breakout From Compression | 285 | 🔬 RESEARCH | 🟡 CANDIDATE (concentrado) |
-| **EXP-05: Extreme Decline** | 233 | 🔬 RESEARCH | 🟢 **CANDIDATE** |
+---
 
-## Candidato principal: EXP-05
+## Resultados finales (post-auditoría, pipeline corregido)
 
-| Métrica | 3 días | 5 días | 10 días |
-|---------|:---:|:---:|:---:|
-| Retorno bruto | +1.76% | +2.07% | +0.99% |
-| Neto futuros (0.46% RT) | **+1.30%** | **+1.61%** | +0.53% |
-| Win Rate | 59.7% | 57.1% | 56.2% |
-| Profit Factor | 1.89 | 1.82 | 1.23 |
-| CI Bootstrap 95% | [0.86, 2.69] | [0.87, 3.27] | [-0.66, 2.62] |
-| Mejor trade % | 3.3% | 3.3% | 3.3% |
+5 experimentos ejecutados sobre 8 acciones argentinas (2015-2026) con datos frescos, pipeline auditado.
 
-**Condición del evento:** Caída de 3 días con z-score < -2.0, mercado no en BEAR.
+| Exp | Familia | Eventos | Bruto (mejor H) | Neto | Cobertura Baseline | Decisión |
+|:---:|:--------|:-------:|:---------------:|:----:|:------------------:|:--------:|
+| EXP-01 | Moderate Pullback | 287 | 10d +0.55% | -1.41% | 100% | ❌ REJECTED |
+| EXP-02 | Pullback With Volume | 74 | 5d +1.50% | -0.46% | 100% | ❌ REJECTED |
+| EXP-03 | Volatility Compression | 1,024 | 20d +2.48% | +0.52% | 6.5% | 🔬 RESEARCH |
+| EXP-04 | Breakout From Compression | 285 | 20d +6.14% | +4.18% | 98.2% | 🔬 RESEARCH |
+| EXP-05 | Extreme Decline | 233 | 5d +1.66% | -0.30% | 99.2% | ❌ REJECTED |
 
-## Hallazgos clave
+Costos: Argentina 1.96% round-trip (0.98%/side).
 
-1. **Ningún edge sobrevive costos de acciones (1.96% RT).** Los costos de BYMA son prohibitivos para estrategias de entrada frecuente.
-2. **Tres familias de eventos tienen señal en USD** pero el edge es pequeño (1-2%).
-3. **EXP-05 es el más robusto:** mejor diversificación, CI sólido, incremental edge positivo.
-4. **EXP-04 tiene el mejor retorno absoluto** pero concentración excesiva en CEPU.BA.
-5. **Futuros ROFEX cambian completamente el panorama:** 6.4x más baratos que acciones.
+### Hallazgos clave
 
-## Pendientes
+1. **Ningún edge sobrevive costos de acciones argentinas (1.96% RT).** EXP-01, 02 y 05 son REJECTED.
+2. **EXP-04 (Breakout) tiene el mejor retorno bruto** (+6.14% a 20d) pero alta concentración en CEPU.BA (39% del profit).
+3. **EXP-03 (Compresión) tiene 1,024 eventos** pero cobertura baseline 6.5% — el match exacto trend+vol es insuficiente para CANDIDATE.
+4. **Futuros ROFEX cambiarían el panorama** (0.46% RT vs 1.96%) pero requieren datos de contrato reales (Q5).
+5. **100% de cobertura baseline** en EXP-01/02/04/05 gracias al matching exacto trend+vol.
 
-- Parameter neighborhood para EXP-05 (z-score -1.5, -2.5)
-- Validación walk-forward del split temporal en el decision engine
-- Soporte para SHORT (futuros permiten ambas direcciones)
-- EXP-02 (Pullback With Volume) no se ejecutó por recomendación de Tom Hagen
+---
+
+## Instalación
+
+```bash
+pip install -r requirements.txt
+```
+
+## Uso
+
+```bash
+# Ejecutar experimento
+python run_experiment.py \
+  --event config/events/exp_001.yaml \
+  --universe config/universe.yaml
+
+# Listar experimentos completados
+python run_experiment.py --list
+
+# Ver reporte
+python run_experiment.py --show exp_001
+```
+
+## Tests
+
+```bash
+python -m pytest tests/ -v
+```
+
+---
+
+## Arquitectura
+
+```
+src/
+├── data_loader.py         # Carga Yahoo Finance + cache con metadata
+├── data_validator.py      # 7 checks de calidad
+├── currency_adjustment.py # ARS→USD via CCL
+├── forward_returns.py     # Retornos forward + MFE/MAE
+├── feature_engine.py      # Indicadores técnicos
+├── event_detector.py      # Detección + cooldown por sesiones
+├── regime_detector.py     # BULL/BEAR + LOW/NORMAL/HIGH_VOL
+├── baseline_comparator.py # 3 baselines + exact match trend+vol
+├── cost_model.py          # Costos Argentina/USA/ROFEX
+├── robustness.py          # Bootstrap, LOO, profit concentration
+├── validator.py           # Split temporal + boundary purge
+└── report_generator.py    # Reportes + make_decision
+```
+
+## Configuración
+
+- `config/universe.yaml` — Targets (8 argentinas) + References (SPY, QQQ, EWZ, ARGT)
+- `config/costs.yaml` — Argentina 1.96% RT, USA 0.22% RT, ROFEX 0.46% RT
+- `config/events/exp_*.yaml` — 5 experimentos con condiciones en formato lista
+
+Ver `statistical_edge_lab_spec.md` para la especificación completa.

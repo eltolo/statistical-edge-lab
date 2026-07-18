@@ -240,33 +240,54 @@ def run_experiment(event_path: str, universe_path: str, costs_path: str):
             )
             all_baselines[ticker] = ticker_bl
 
-    # Per-horizon aggregate baselines (event-weighted)
+    # Per-horizon aggregate baselines (event-weighted, using exact_matched_mean)
     baselines = {}
+    baseline_coverage = {}
     for h in horizons:
         unconditional_vals = []
-        regime_vals = []
+        matched_vals = []
+        trend_only_vals = []
         benchmark_vals = []
         weights = []
         for ticker, bl in all_baselines.items():
             if h in bl:
                 n_events = len(events.get(ticker, []))
                 unconditional_vals.append(bl[h]["unconditional"] * n_events)
-                regime_vals.append(bl[h]["regime_conditioned"] * n_events)
+                matched_vals.append(bl[h]["exact_matched_mean"] * n_events)
+                trend_only_vals.append(bl[h]["trend_only_fallback_mean"] * n_events)
                 benchmark_vals.append(bl[h]["benchmark"] * n_events)
                 weights.append(n_events)
+                # Aggregate coverage
+                cov = bl[h].get("baseline_coverage", {})
+                for k in ("n_events", "n_valid", "n_low_confidence", "n_insufficient"):
+                    baseline_coverage.setdefault(k, 0)
+                    baseline_coverage[k] += cov.get(k, 0)
         total_w = sum(weights) or 1
         baselines[h] = {
             "unconditional": sum(unconditional_vals) / total_w if unconditional_vals else 0.0,
-            "regime_conditioned": sum(regime_vals) / total_w if regime_vals else 0.0,
+            "exact_matched_mean": sum(matched_vals) / total_w if matched_vals else 0.0,
+            "trend_only_fallback_mean": sum(trend_only_vals) / total_w if trend_only_vals else 0.0,
             "benchmark": sum(benchmark_vals) / total_w if benchmark_vals else 0.0,
         }
+
+    # Attach baseline coverage to first horizon for report
+    if baseline_coverage and baselines:
+        first_h = list(baselines.keys())[0]
+        baselines[first_h]["baseline_coverage"] = baseline_coverage
+
+    # Log baseline coverage summary
+    if baseline_coverage.get("n_events", 0):
+        n = baseline_coverage["n_events"]
+        logger.info(f"  Baseline coverage: {baseline_coverage['n_valid']}/{n} VALID, "
+                    f"{baseline_coverage['n_low_confidence']}/{n} LOW_CONFIDENCE, "
+                    f"{baseline_coverage['n_insufficient']}/{n} INSUFFICIENT")
 
     # ── STEP 9: Costs summary ──
     logger.info("=" * 60)
     logger.info("STEP 9: Transaction costs")
     cost_summary = summarize_costs(cost_config)
 
-    # ── STEP 10: Temporal split (P0 #8) ──
+    # ── STEP 10: Temporal split (P0 #8, Q3 purge) ──
     logger.info("=" * 60)
     logger.info("STEP 10: Temporal split")
     splitter = TemporalSplit(
@@ -277,32 +298,39 @@ def run_experiment(event_path: str, universe_path: str, costs_path: str):
     flat_dates = [d for _, d in all_event_dates]
     splitter.fit(data_usd, flat_dates)
 
-    # Per-split metrics
+    # Classify every trade by signal+entry+exit dates (Q3)
+    # Discard boundary_crossing from formal split metrics
+    split_classified = {}  # horizon -> {split_name -> df}
+    n_boundary = 0
+    for h in horizons:
+        split_classified[h] = {"discovery": [], "validation": [], "holdout": []}
+        if h not in combined_returns or combined_returns[h].empty:
+            continue
+        for _, row in combined_returns[h].iterrows():
+            split_label = splitter.assign_trade_split({
+                "signal_date": row["signal_date"],
+                "entry_date": row["entry_date"],
+                "exit_date": row["exit_date"],
+            })
+            if split_label == "boundary_crossing":
+                n_boundary += 1
+            elif split_label in split_classified[h]:
+                split_classified[h][split_label].append(row.to_dict())
+
+    # Compute per-split metrics from classified trades
     split_metrics = {}
     for split_name in ["discovery", "validation", "holdout"]:
-        split_events = {}
-        for ticker, dates in events.items():
-            filtered = [d for d in dates if splitter.get_period(d) == split_name]
-            if filtered:
-                split_events[ticker] = filtered
-        # Compute forward returns for this split
-        split_raw = {}
-        for ticker, dates in split_events.items():
-            split_raw[ticker] = calculate_forward_returns(
-                data_usd[ticker], dates, horizons,
-                entry_mode="next_open",
-            )
         split_combined = {}
         for h in horizons:
-            all_fr = []
-            for ticker in split_raw:
-                if h in split_raw[ticker] and not split_raw[ticker][h].empty:
-                    df = split_raw[ticker][h].copy()
-                    df["ticker"] = ticker
-                    all_fr.append(df)
-            split_combined[h] = pd.concat(all_fr) if all_fr else pd.DataFrame()
-
+            records = split_classified[h][split_name]
+            if records:
+                split_combined[h] = pd.DataFrame(records)
+            else:
+                split_combined[h] = pd.DataFrame()
         split_metrics[split_name] = compute_overall_metrics(split_combined)
+
+    if n_boundary > 0:
+        logger.info(f"  Purged {n_boundary} boundary-crossing trades from split metrics (Q3)")
 
     # ── STEP 11: Robustness ──
     logger.info("=" * 60)

@@ -1,80 +1,687 @@
-# Preguntas al Auditor — sobre `auditoria_2.md`
+# Preguntas al Auditor — Respuestas definitivas
 
-## 1. Próximo-open horizonte (sección 3.1)
+**Repository:** `eltolo/statistical-edge-lab`  
+**Branch reviewed:** `main`  
+**Reviewed HEAD:** `d86e47a`  
+**Relevant code revision:** `945f8da`  
+**Purpose:** Close the implementation questions raised after `auditoria_2.md`.
 
-> exit_idx = entry_idx + horizon - 1
-
-Con horizon=1: entry en open de t+1, exit en close de t+1. Son 0 sesiones de holding. ¿Es intencional? Un trade de 1 sesión significa comprar al open y vender al close del mismo día. Si el objetivo es 1 día de holding, ¿no debería ser `exit_idx = entry_idx + horizon`?
-
-Pregunta concreta: **para horizon=1, ¿entry open t+1, exit close t+1 está bien, o debería ser exit close t+2 (1 sesión completa de diferencia)?**
+These answers are normative. Implement them as written and do not choose alternative interpretations without documenting a new design decision.
 
 ---
 
-## 2. Feature engine: close_breaks_high_20d (sección 2)
+## 1. Next-open horizon semantics
 
-La feature `close_breaks_high_20d` se calcula como:
+### Question
+
+For `horizon=1`, should the trade enter at the open of `t+1` and exit at the close of `t+1`, or at the close of `t+2`?
+
+### Decision
+
+For this project:
+
+```text
+horizon = number of trading sessions in which the position is held
+```
+
+Therefore:
+
+```text
+Signal confirmed: close of t
+Entry: open of t+1
+horizon=1 exit: close of t+1
+horizon=3 exit: close of t+3
+horizon=5 exit: close of t+5
+```
+
+The correct implementation is:
+
+```python
+exit_idx = entry_idx + horizon - 1
+```
+
+A trade entered at the open and closed at the close of the same session has one session of market exposure. The fact that the entry and exit are in the same DataFrame row does not mean the holding period is zero.
+
+The current implementation still uses:
+
+```python
+exit_idx = entry_idx + horizon
+```
+
+That makes every next-open trade one session longer than declared.
+
+### Required implementation
+
+```python
+if horizon < 1:
+    raise ValueError("horizon must be >= 1")
+
+entry_idx = signal_idx + 1
+exit_idx = entry_idx + horizon - 1
+```
+
+Also rename internal concepts where useful:
+
+```text
+forward_horizons → holding_sessions
+```
+
+The YAML field may remain `forward_horizons` for compatibility, but its documented meaning must be “number of held trading sessions.”
+
+### Required tests
+
+```text
+horizon=1 → open t+1 to close t+1
+horizon=2 → open t+1 to close t+2
+horizon=5 → open t+1 to close t+5
+```
+
+---
+
+## 2. `close_breaks_high_20d`
+
+### Question
+
+Is this calculation correct?
 
 ```python
 close > high.rolling(20).max().shift(1)
 ```
 
-Esta feature se usa en EXP-04. ¿Es correcta o debería comparar contra el máximo de las últimas 20 sesiones *anteriores* (excluyendo la actual)? El `.shift(1)` ya hace eso, pero quiero confirmar que la intención es "cierra por arriba del máximo de los últimos 20 días" (breakout), no "está por arriba del máximo incluyendo hoy" (que sería siempre true).
+### Decision
+
+Yes. It is correct for the intended breakout definition.
+
+At session `t`, the expression compares:
+
+```text
+current close at t
+```
+
+against:
+
+```text
+maximum high from the previous 20 completed sessions
+```
+
+The `.shift(1)` is required because it excludes the current session from the reference high.
+
+Use:
+
+```python
+previous_20_session_high = high.rolling(20).max().shift(1)
+close_breaks_high_20d = close > previous_20_session_high
+```
+
+Do not compare against a rolling maximum that includes the current session. Since:
+
+```text
+close[t] <= high[t]
+```
+
+including the current high would make a strict close breakout impossible whenever the current session sets the maximum.
+
+### Additional requirement
+
+For Argentine assets, both series must use the same adjusted USD price domain:
+
+```text
+close_usd_adjusted
+high_usd_adjusted
+```
+
+Do not compare an adjusted close against an unadjusted high, or a USD close against an ARS high.
+
+### Required tests
+
+```text
+Current close above every high from t-20 through t-1 → True
+Current close equal to previous 20-session high → False with strict ">"
+Current high makes a new high but close remains below old maximum → False
+Current session must not be included in the reference maximum
+```
 
 ---
 
-## 3. Fechas de holdout y purge (sección 10)
+## 3. Trades crossing temporal split boundaries
 
-La auditoría pide que un trade pertenezca a una partición solo si `signal_date`, `entry_date` y `exit_date` están todos dentro de la misma partición. También sugiere excluir trades cuyo holding window cruce un borde.
+### Question
 
-Para un trade signal=T, entry=T+1, exit=T+6: si T está en discovery pero T+6 cae en validation, ¿debería descartarse el trade completamente, o asignarse a la partición donde cae la mayoría de las fechas?
+If the signal belongs to discovery but the entry or exit falls in validation, should the trade be discarded or assigned by majority?
 
-Pregunta concreta: **¿qué partición gana cuando las tres fechas no coinciden? ¿Descartar siempre, o asignar por majority?**
+### Decision
+
+Discard it from all formal split metrics.
+
+Never assign a boundary-crossing trade by majority.
+
+A trade is eligible for a temporal partition only when all of the following belong to the same partition:
+
+```text
+signal_date
+entry_date
+exit_date
+```
+
+For example:
+
+```text
+signal_date = discovery
+entry_date = discovery
+exit_date = validation
+```
+
+Result:
+
+```text
+exclude from discovery
+exclude from validation
+exclude from holdout
+classification = boundary_crossing
+```
+
+Majority assignment is arbitrary and allows one partition to consume price information from another partition.
+
+### Required implementation
+
+First calculate the full canonical trade table, including actual entry and exit dates.
+
+Then assign:
+
+```python
+def assign_trade_split(signal_date, entry_date, exit_date, splitter):
+    periods = {
+        splitter.get_period(signal_date),
+        splitter.get_period(entry_date),
+        splitter.get_period(exit_date),
+    }
+
+    if len(periods) != 1:
+        return "boundary_crossing"
+
+    return periods.pop()
+```
+
+Exclude `boundary_crossing` from:
+
+```text
+discovery metrics
+validation metrics
+holdout metrics
+decision engine
+bootstrap by split
+```
+
+Keep those rows in a diagnostic artifact so the exclusion is auditable.
+
+### Preferred additional protection
+
+Apply an embargo around each boundary equal to:
+
+```text
+maximum holding horizon + one entry session
+```
+
+However, even with an embargo, the actual trade dates must still be checked.
 
 ---
 
-## 4. Baselines matching (sección 6.2)
+## 4. Insufficient matched-baseline controls
 
-La auditoría pide baselines matched por `trend_regime` + `volatility_regime`. En el mercado argentino, la combinación BULL+LOW_VOL es común, pero BEAR+HIGH_VOL tiene muy pocas observaciones. ¿Qué hacer cuando el pool de control es insuficiente (< 5 observaciones)?
+### Question
 
-Opciones:
-- Descartar ese evento (reduce muestra)
-- Usar solo trend_regime (simplifica)
-- Flag como "insuficiente" en el reporte
+What should happen when the exact `trend_regime + volatility_regime` control pool is too small?
 
-**¿Qué criterio preferís?**
+### Decision
+
+Do not silently replace the primary matched baseline with a weaker one.
+
+Use the following hierarchy:
+
+```text
+Exact primary match:
+same ticker
+same trend regime
+same volatility regime
+same execution model
+non-overlapping control window
+```
+
+Control-pool classification:
+
+```text
+n_controls >= 20 → VALID
+5 <= n_controls < 20 → LOW_CONFIDENCE
+n_controls < 5 → INSUFFICIENT
+```
+
+For `INSUFFICIENT`:
+
+- Keep the event in raw event-return statistics.
+- Do not calculate a primary matched incremental edge for that event.
+- Mark `baseline_status = INSUFFICIENT`.
+- Exclude that event from the primary matched-edge aggregation.
+- Report matched-baseline coverage.
+
+Do not discard the event from the entire study merely because its baseline is unavailable.
+
+### Secondary diagnostic fallback
+
+A trend-only baseline may be calculated as a separate diagnostic:
+
+```text
+fallback_baseline = same trend regime, any volatility regime
+```
+
+But it must be labeled:
+
+```text
+secondary_trend_only_baseline
+```
+
+It must not replace the exact primary baseline when making a `CANDIDATE` decision.
+
+### Candidate coverage requirement
+
+For the primary horizon, require:
+
+```text
+at least 80% of evaluated events have VALID or LOW_CONFIDENCE exact matched baselines
+```
+
+Additionally:
+
+```text
+at least 50% should have VALID pools with n_controls >= 20
+```
+
+If coverage is lower, the maximum decision is:
+
+```text
+RESEARCH
+```
+
+even if the available matched edge is positive.
+
+### Important correction to current code
+
+The current baseline implementation matches only `trend_regime`. It must be extended to match both:
+
+```text
+trend_regime
+volatility_regime
+```
 
 ---
 
-## 5. Costos de futuros vs sensibilidad (sección 7)
+## 5. Minimum valid futures paper trading
 
-La auditoría dice que cambiar el modelo de costos no es un backtest de futuros. Estoy de acuerdo. Pero para el paper trading real, ¿esperás que implementemos:
+### Question
 
-- (a) Conexión real a ROFEX API para precios de futuros?
-- (b) Simulación de futuros desde precios cash + basis estimado?
-- (c) Dejar el paper trader como está (señal cash, costos futuros) y etiquetarlo como "low-cost sensitivity analysis"?
+Is a real ROFEX connection required, is a cash-plus-estimated-basis simulation sufficient, or should the existing low-cost version remain only a sensitivity analysis?
 
-La pregunta es: **¿cuál es el mínimo acceptable para considerar el paper trading "válido"?**
+### Decision
+
+The existing implementation must remain labeled:
+
+```text
+LOW-COST EXECUTION SENSITIVITY ANALYSIS
+```
+
+It is not valid futures paper trading.
+
+Changing only commission and slippage assumptions does not model the tradable futures instrument.
+
+### Minimum acceptable futures paper trader
+
+A valid futures paper-trading engine requires actual market data for the tradable contract.
+
+A direct ROFEX API connection is not mandatory if another reliable source provides actual contract quotes. Acceptable sources may include:
+
+```text
+broker API
+market data collector
+historical contract files
+Matriz feed
+ROFEX/Matba market data
+```
+
+The minimum required data and logic are:
+
+```text
+actual contract symbol
+contract expiry
+contract multiplier
+bid
+ask
+last price
+quote timestamp
+volume
+open interest when available
+margin requirement
+contract-specific fees
+entry and exit fill rules
+expiry handling
+roll rule
+daily settlement / mark-to-market
+```
+
+The signal may still originate from the cash asset.
+
+Example:
+
+```text
+Signal source: GGAL.BA
+Execution instrument: actual GGAL futures contract
+```
+
+But returns and fills must be calculated from actual futures quotes.
+
+### Classification of the three options
+
+```text
+(a) Actual futures quotes through ROFEX, broker, Matriz, or equivalent:
+    VALID minimum path.
+
+(b) Cash price + estimated basis:
+    research prototype only.
+    Not valid paper trading.
+
+(c) Cash signal + futures-like costs:
+    low-cost sensitivity analysis only.
+    Not valid paper trading.
+```
+
+### Minimum fill model
+
+For a long paper trade:
+
+```text
+entry = executable ask at or after signal execution time
+exit = executable bid at exit time
+```
+
+For a short paper trade:
+
+```text
+entry = executable bid
+exit = executable ask
+```
+
+Using only last price is insufficient for execution validation.
 
 ---
 
-## 6. Parameter neighborhood (sección 9.4)
+## 6. Parameter neighborhood for EXP-005
 
-Para EXP-05, proponés testear z-score = -1.75, -2.00, -2.25. Pero el z-score se calcula sobre una ventana de 60d. Si cambiamos el threshold, ¿debemos mantener la ventana fija o también testear 40d/80d?
+### Question
 
-**¿El parameter neighborhood es solo sobre el threshold, o también sobre ventanas de cálculo?**
+Should the neighborhood vary only the z-score threshold, or also the rolling window?
+
+### Decision
+
+Test both, but in two controlled stages.
+
+Do not immediately perform an unrestricted Cartesian optimization.
+
+The declared primary hypothesis remains:
+
+```text
+z-score threshold = -2.00
+z-score window = 60 sessions
+primary horizon = 10 sessions
+```
+
+### Stage A — Threshold sensitivity
+
+Keep the window fixed at 60:
+
+```text
+-1.75
+-2.00
+-2.25
+```
+
+Purpose:
+
+```text
+Determine whether the result is stable around the selected threshold.
+```
+
+### Stage B — Window sensitivity
+
+Keep the threshold fixed at `-2.00`:
+
+```text
+40 sessions
+60 sessions
+80 sessions
+```
+
+Purpose:
+
+```text
+Determine whether the result depends on one exact lookback window.
+```
+
+### Optional Stage C — Small robustness surface
+
+After Stages A and B, a predeclared `3 × 3` matrix may be reported:
+
+```text
+thresholds = [-1.75, -2.00, -2.25]
+windows = [40, 60, 80]
+```
+
+This matrix is diagnostic only.
+
+Do not:
+
+- Select the best cell.
+- Change the primary hypothesis after observing the holdout.
+- Reclassify a failed primary configuration because a neighboring cell performed better.
+
+### Desired result
+
+Look for a plateau:
+
+```text
+same sign
+similar magnitude
+reasonable event counts
+consistent behavior across adjacent settings
+```
+
+Do not require every cell to pass, but reject a result that works only at one isolated coordinate.
 
 ---
 
-## 7. Clean cache antes de rerun
+## 7. Cache policy before the corrected rerun
 
-La auditoría pide "clear or validate all cached source data" antes de rerun. ¿Querés que borremos todo `data/raw/` y redescarguemos, o basta con agregar metadata de cobertura y validar que los rangos pedidos están cubiertos?
+### Question
 
-**¿Delete + fresh download, o validate + refresh?**
+Should all raw data be deleted and downloaded again, or should the cache be validated and refreshed?
+
+### Decision for the next corrected rerun
+
+Use:
+
+```text
+DELETE OR ARCHIVE CURRENT CACHE + FRESH DOWNLOAD
+```
+
+Reason:
+
+The current cache implementation is ticker-based and does not validate:
+
+```text
+requested start date
+requested end date
+download timestamp
+last available session
+source options
+adjustment settings
+content hash
+```
+
+Therefore, the current cache cannot prove that it is complete or compatible with the corrected pipeline.
+
+Recommended procedure:
+
+```bash
+mv data/raw data/raw_pre_audit2_backup
+mkdir -p data/raw
+```
+
+Then perform a complete fresh download.
+
+Do not mix pre-audit cache files with the corrected official rerun.
+
+### Policy after cache metadata is implemented
+
+Normal future behavior should be:
+
+```text
+VALIDATE + REFRESH
+```
+
+not delete everything on every run.
+
+Each cache artifact must store metadata such as:
+
+```json
+{
+  "ticker": "GGAL.BA",
+  "source": "yfinance",
+  "requested_start": "2015-01-01",
+  "requested_end": "2026-07-17",
+  "downloaded_at": "...",
+  "first_available_date": "...",
+  "last_available_date": "...",
+  "auto_adjust": false,
+  "schema_version": "...",
+  "content_sha256": "..."
+}
+```
+
+The loader should:
+
+1. Verify coverage.
+2. Verify schema and adjustment settings.
+3. Refresh missing leading or trailing periods.
+4. Fail if required coverage remains incomplete.
+5. Record cache hashes in experiment metadata.
+
+### Final rule
+
+```text
+First official post-audit rerun:
+fresh download.
+
+Subsequent normal runs:
+validate + incremental refresh.
+```
 
 ---
 
-## 8. Documentación contradictoria (sección 11.4)
+## 8. Synchronizing `AGENTS.md`
 
-`AGENTS.md` actualmente dice que todo está ❌ no implementado. La auditoría pide sincronizar. ¿Querés que `AGENTS.md` refleje el estado exacto post-cada commit (generado automáticamente), o es suficiente actualizarlo manualmente al final de cada milestone?
+### Question
 
-**¿Automático desde metadata.json, o manual al cierre de milestone?**
+Should `AGENTS.md` be generated automatically after every commit, or updated manually at milestone completion?
+
+### Decision
+
+Manual milestone updates are sufficient.
+
+Do not regenerate the entire `AGENTS.md` file after every commit.
+
+Use this division of responsibility:
+
+```text
+AGENTS.md
+→ stable operational guide
+→ architecture
+→ rules
+→ current milestone status
+→ manually updated at milestone closure
+
+metadata.json / status.json
+→ exact machine-generated run state
+→ commit hash
+→ tests
+→ experiment decisions
+→ generated for every official run
+```
+
+### Required workflow
+
+At the end of each milestone:
+
+1. Run the complete test suite.
+2. Generate experiment metadata.
+3. Verify repository artifacts.
+4. Update `AGENTS.md` manually.
+5. Update `README.md`.
+6. Commit documentation and generated status together.
+
+### Recommended drift check
+
+Add a small CI or local validation script that fails when obvious contradictions exist.
+
+Example checks:
+
+```text
+README says EXP-001 complete but no result metadata exists
+AGENTS says module not implemented but source file is operational
+README decision differs from metadata.json
+reported test count differs from pytest collection
+```
+
+The script may generate:
+
+```text
+results/project_status.json
+```
+
+But it should not rewrite narrative documentation automatically.
+
+### Current repository correction
+
+The current `AGENTS.md` marks all modules and experiments as unimplemented, while the repository contains implemented modules and the README claims EXP-001 is complete.
+
+Update both documents at the next milestone closure, after the corrected rerun—not before.
+
+---
+
+# Final implementation decisions
+
+```text
+Q1  horizon=1 means next open to same-session close.
+Q2  close > prior 20-session high with shift(1) is correct.
+Q3  discard every trade crossing a split boundary.
+Q4  exact trend+volatility baseline is primary; insufficient pools are flagged, not silently replaced.
+Q5  valid futures paper trading requires actual futures contract quotes and execution.
+Q6  test threshold and window separately, then optionally show a fixed 3×3 robustness surface.
+Q7  fresh download for the next official rerun; validate+refresh after metadata support exists.
+Q8  update AGENTS.md manually at milestone closure; machine-generate status metadata and use a drift check.
+```
+
+---
+
+# Immediate next actions
+
+Implement in this order:
+
+```text
+1. Correct next-open horizon indexing.
+2. Include the entry session in MFE/MAE.
+3. Add boundary-crossing purge logic.
+4. Extend matched baselines to trend + volatility regime.
+5. Add baseline pool status and coverage metrics.
+6. Implement cache metadata and coverage validation.
+7. Archive/delete the current raw cache.
+8. Perform a clean data download.
+9. Execute corrected EXP-005 using its declared primary configuration.
+10. Update AGENTS.md and README.md only after tests and artifacts are complete.
+```

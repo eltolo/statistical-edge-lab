@@ -107,6 +107,31 @@ class TemporalSplit:
             result[period].append(d)
         return result
 
+    def assign_trade_split(self, trade: dict) -> str:
+        """
+        Classify a trade into discovery/validation/holdout/boundary_crossing.
+
+        Per Q3 decision: all three dates (signal_date, entry_date, exit_date)
+        must belong to the SAME partition. If they don't, the trade is
+        classified as 'boundary_crossing' and excluded from formal metrics.
+
+        Args:
+            trade: dict with 'signal_date', 'entry_date', 'exit_date'
+
+        Returns:
+            'discovery', 'validation', 'holdout', or 'boundary_crossing'
+        """
+        periods = set()
+        for key in ("signal_date", "entry_date", "exit_date"):
+            d = trade.get(key)
+            if d is None:
+                return "boundary_crossing"
+            periods.add(self.get_period(d))
+
+        if len(periods) == 1:
+            return periods.pop()
+        return "boundary_crossing"
+
     def split_data(self, data: dict[str, pd.DataFrame]) -> dict[str, dict[str, pd.DataFrame]]:
         """Split all DataFrames by period."""
         result = {

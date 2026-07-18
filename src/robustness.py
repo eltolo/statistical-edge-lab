@@ -128,43 +128,39 @@ def _get_forward_returns(
 def leave_one_asset_out(
     data: dict[str, pd.DataFrame],
     conditions: dict,
-    cooldown_days: int,
+    cooldown_sessions: int,
     horizons: list[int],
     price_col: str = "close_usd",
 ) -> list[dict]:
     """
     Spec §15.2: Recalculate results excluding one ticker at a time.
+    Per-horizon metrics. Does not mix horizons.
 
-    Returns list of {excluded_ticker, n_events, metrics_by_horizon}
+    Returns list of {excluded_ticker, horizon, n_events, mean_return}
     """
     from event_detector import detect_events_all_assets
-    from forward_returns import calculate_forward_returns, summarize_forward_returns
+    from forward_returns import calculate_forward_returns
 
     tickers = list(data.keys())
     results = []
 
     for excluded in tickers:
         subset = {t: d for t, d in data.items() if t != excluded}
-        events = detect_events_all_assets(subset, conditions, cooldown_days)
+        events = detect_events_all_assets(subset, conditions, cooldown_sessions)
 
-        all_events = []
-        for ticker, dates in events.items():
-            fr = calculate_forward_returns(subset[ticker], dates, horizons, price_col)
-            for h in horizons:
+        for h in horizons:
+            all_rets = []
+            for ticker, dates in events.items():
+                fr = calculate_forward_returns(subset[ticker], dates, [h], price_col)
                 if h in fr and not fr[h].empty:
-                    all_events.append(fr[h]["forward_return"])
+                    all_rets.extend(fr[h]["forward_return"].values)
 
-        if all_events:
-            combined = pd.concat(all_events).values
-            metrics = {h: {"n_events": len(combined), "mean_return": float(np.mean(combined))}
-                       for h in horizons}
-        else:
-            metrics = {h: {"n_events": 0, "mean_return": 0.0} for h in horizons}
-
-        results.append({
-            "excluded_ticker": excluded,
-            "metrics": metrics,
-        })
+            results.append({
+                "excluded_ticker": excluded,
+                "horizon": h,
+                "n_events": len(all_rets),
+                "mean_return": float(np.mean(all_rets)) if all_rets else 0.0,
+            })
 
     return results
 
@@ -172,13 +168,17 @@ def leave_one_asset_out(
 def leave_one_year_out(
     data: dict[str, pd.DataFrame],
     conditions: dict,
-    cooldown_days: int,
+    cooldown_sessions: int,
     horizons: list[int],
     years: Optional[list[int]] = None,
     price_col: str = "close_usd",
 ) -> list[dict]:
     """
     Spec §15.3: Recalculate results excluding one calendar year at a time.
+    Per-horizon metrics. Does not mix horizons.
+
+    Does NOT remove data from DataFrame (avoids creating artificial
+    adjacency across the gap). Instead filters events by signal_date.
     """
     from event_detector import detect_events_all_assets
     from forward_returns import calculate_forward_returns
@@ -189,118 +189,142 @@ def leave_one_year_out(
             all_years.update(df.index.year.unique())
         years = sorted(all_years)
 
+    # Detect events on full data
+    events = detect_events_all_assets(data, conditions, cooldown_sessions)
+
     results = []
     for year in years:
-        # Remove data for that year
-        subset = {}
-        for ticker, df in data.items():
-            subset[ticker] = df[df.index.year != year]
-
-        events = detect_events_all_assets(subset, conditions, cooldown_days)
-
-        all_returns = []
-        for ticker, dates in events.items():
-            fr = calculate_forward_returns(subset[ticker], dates, horizons, price_col)
-            for h in horizons:
+        for h in horizons:
+            all_rets = []
+            for ticker, dates in events.items():
+                # Filter events whose signal_date is NOT in the excluded year
+                filtered_dates = [d for d in dates if d.year != year]
+                if not filtered_dates:
+                    continue
+                fr = calculate_forward_returns(data[ticker], filtered_dates, [h], price_col)
                 if h in fr and not fr[h].empty:
-                    all_returns.extend(fr[h]["forward_return"].values)
+                    all_rets.extend(fr[h]["forward_return"].values)
 
-        result = {
-            "excluded_year": year,
-            "n_events": len(all_returns),
-            "mean_return": float(np.mean(all_returns)) if all_returns else 0.0,
-        }
-        results.append(result)
+            results.append({
+                "excluded_year": year,
+                "horizon": h,
+                "n_events": len(all_rets),
+                "mean_return": float(np.mean(all_rets)) if all_rets else 0.0,
+            })
 
     return results
 
 
-def profit_concentration(
-    returns_per_asset: dict[str, np.ndarray],
-) -> dict:
+def profit_concentration_per_horizon(
+    returns_by_asset_horizon: dict[str, dict[int, np.ndarray]],
+) -> dict[int, dict]:
     """
-    Spec §15.4: Measure profit concentration.
+    Spec §15.4: Measure profit concentration PER HORIZON.
+
+    Args:
+        returns_by_asset_horizon: {ticker: {horizon: np.ndarray}}
 
     Returns:
-        - best_trade_pct: % of total profit from best trade
-        - best_3_pct: % from best 3 trades
-        - best_asset_pct: % from best-performing asset
-        - best_year_pct: % from best-performing year
+        dict[horizon -> {
+            best_trade_pct, best_3_pct, best_asset, best_asset_pct
+        }]
     """
-    all_returns = np.concatenate(list(returns_per_asset.values()))
-    total_profit = np.sum(all_returns)
+    # Collect all horizons
+    all_horizons = set()
+    for asset_rets in returns_by_asset_horizon.values():
+        all_horizons.update(asset_rets.keys())
 
-    if total_profit == 0:
-        return {
-            "best_trade_pct": 0,
-            "best_3_pct": 0,
-            "best_asset_pct": 0,
+    results = {}
+    for h in sorted(all_horizons):
+        # Gather returns for this horizon
+        asset_rets = {}
+        for ticker, by_h in returns_by_asset_horizon.items():
+            if h in by_h:
+                asset_rets[ticker] = by_h[h]
+
+        all_returns = np.concatenate(list(asset_rets.values())) if asset_rets else np.array([])
+        total_profit = np.sum(all_returns)
+
+        if total_profit == 0 or len(all_returns) == 0:
+            results[h] = {
+                "best_trade_pct": 0,
+                "best_3_pct": 0,
+                "best_asset": "—",
+                "best_asset_pct": 0,
+                "n_trades": 0,
+                "n_assets": len(asset_rets),
+            }
+            continue
+
+        # Best trade
+        best_trade_pct = float(np.max(all_returns) / total_profit * 100)
+
+        # Best 3 trades
+        sorted_rets = np.sort(all_returns)[::-1]
+        best_3_pct = float(np.sum(sorted_rets[:3]) / total_profit * 100)
+
+        # Best asset
+        asset_profits = {t: float(np.sum(r)) for t, r in asset_rets.items()}
+        best_asset = max(asset_profits, key=asset_profits.get)
+        best_asset_pct = float(asset_profits[best_asset] / total_profit * 100)
+
+        results[h] = {
+            "horizon": h,
+            "best_trade_pct": best_trade_pct,
+            "best_3_pct": best_3_pct,
+            "best_asset": best_asset,
+            "best_asset_pct": best_asset_pct,
+            "n_trades": len(all_returns),
+            "n_assets": len(asset_rets),
         }
 
-    # Best trade
-    best_trade_pct = float(np.max(all_returns) / total_profit * 100)
-
-    # Best 3 trades
-    sorted_returns = np.sort(all_returns)[::-1]
-    best_3_pct = float(np.sum(sorted_returns[:3]) / total_profit * 100)
-
-    # Best asset
-    asset_profits = {t: float(np.sum(r)) for t, r in returns_per_asset.items()}
-    best_asset = max(asset_profits, key=asset_profits.get)
-    best_asset_pct = float(asset_profits[best_asset] / total_profit * 100)
-
-    return {
-        "best_trade_pct": best_trade_pct,
-        "best_3_pct": best_3_pct,
-        "best_asset": best_asset,
-        "best_asset_pct": best_asset_pct,
-    }
+    return results
 
 
 def run_all_robustness(
     data: dict[str, pd.DataFrame],
     conditions: dict,
-    cooldown_days: int,
+    cooldown_sessions: int,
     horizons: list[int],
     price_col: str = "close_usd",
 ) -> dict:
-    """Run all robustness tests and return consolidated results."""
+    """Run all robustness tests (per-horizon) and return consolidated results."""
     results = {}
 
-    # Bootstrap (on combined returns)
     from event_detector import detect_events_all_assets
     from forward_returns import calculate_forward_returns
-    events = detect_events_all_assets(data, conditions, cooldown_days)
+    events = detect_events_all_assets(data, conditions, cooldown_sessions)
 
-    all_returns_by_asset = {}
+    # Per-horizon: bootstrap, collect returns for profit concentration
+    returns_by_asset_horizon: dict[str, dict[int, np.ndarray]] = {}
     for h in horizons:
         all_returns = []
         for ticker, dates in events.items():
             fr = calculate_forward_returns(data[ticker], dates, [h], price_col)
             if h in fr and not fr[h].empty:
                 rets = fr[h]["forward_return"].values
-                all_returns.extend(rets)
-                if ticker not in all_returns_by_asset:
-                    all_returns_by_asset[ticker] = []
-                all_returns_by_asset[ticker].append(rets)
+                if len(rets):
+                    all_returns.extend(rets)
+                    if ticker not in returns_by_asset_horizon:
+                        returns_by_asset_horizon[ticker] = {}
+                    returns_by_asset_horizon[ticker][h] = rets
 
         if all_returns:
             results[f"bootstrap_h{h}d"] = bootstrap_ci(np.array(all_returns))
+        else:
+            results[f"bootstrap_h{h}d"] = {"mean": 0, "ci_lower": 0, "ci_upper": 0, "std_error": 0}
 
-    # Leave-one-asset-out
+    # Leave-one-asset-out (per-horizon inside)
     results["leave_one_asset_out"] = leave_one_asset_out(
-        data, conditions, cooldown_days, horizons, price_col
+        data, conditions, cooldown_sessions, horizons, price_col
     )
 
-    # Leave-one-year-out
+    # Leave-one-year-out (per-horizon inside)
     results["leave_one_year_out"] = leave_one_year_out(
-        data, conditions, cooldown_days, horizons, price_col
+        data, conditions, cooldown_sessions, horizons, price_col
     )
 
-    # Profit concentration
-    flat_by_asset = {}
-    for ticker, ret_lists in all_returns_by_asset.items():
-        flat_by_asset[ticker] = np.concatenate(ret_lists) if ret_lists else np.array([])
-    results["profit_concentration"] = profit_concentration(flat_by_asset)
+    # Profit concentration (per-horizon)
+    results["profit_concentration"] = profit_concentration_per_horizon(returns_by_asset_horizon)
 
     return results

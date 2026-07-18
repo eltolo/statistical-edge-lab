@@ -94,17 +94,25 @@ def generate_summary(
 
 
 def _write_robustness_csv(robustness: dict, path: Path):
-    """Write robustness results as CSV."""
+    """Write robustness results as CSV. Does not mutate input dicts."""
     rows = []
     for key, value in robustness.items():
         if isinstance(value, list):
             for item in value:
                 if isinstance(item, dict):
-                    item["test"] = key
-                    rows.append(item)
+                    row = dict(item)
+                    row["test"] = key
+                    rows.append(row)
         elif isinstance(value, dict):
-            value["test"] = key
-            rows.append(value)
+            # For dict values (e.g. profit_concentration per horizon),
+            # flatten each sub-item into a separate row
+            for sub_key, sub_val in value.items():
+                if isinstance(sub_val, dict):
+                    row = dict(sub_val)
+                    row["test"] = f"{key}_{sub_key}"
+                    rows.append(row)
+                else:
+                    rows.append({"test": f"{key}_{sub_key}", "value": sub_val})
         else:
             rows.append({"test": key, "value": value})
     if rows:
@@ -161,8 +169,8 @@ def _build_summary_md(
     lines.append("")
 
     # Baseline table
-    lines.append("| Horizon | Event Mean % | Unconditional % | Regime-Cond. % | Benchmark % | Incremental Edge % |")
-    lines.append("|---------|-------------|-----------------|----------------|-------------|---------------------|")
+    lines.append("| Horizon | Event Mean % | Unconditional % | Exact Match % | Trend-Only % | Benchmark % | Incremental Edge % |")
+    lines.append("|---------|-------------|-----------------|---------------|--------------|-------------|---------------------|")
 
     for h_key in sorted([k for k in metrics.keys() if k.startswith("horizon_")]):
         h_data = metrics[h_key]
@@ -173,10 +181,30 @@ def _build_summary_md(
         lines.append(
             f"| {horizon}d | {_pct(ev_mean)} "
             f"| {_pct(bl.get('unconditional', 0))} "
-            f"| {_pct(bl.get('regime_conditioned', 0))} "
+            f"| {_pct(bl.get('exact_matched_mean', 0))} "
+            f"| {_pct(bl.get('trend_only_fallback_mean', 0))} "
             f"| {_pct(bl.get('benchmark', 0))} "
             f"| {_pct(inc)} |"
         )
+
+    # Baseline coverage
+    if baselines:
+        first_h = list(baselines.keys())[0]
+        cov = baselines[first_h].get("baseline_coverage", {})
+        n_total = cov.get("n_events", 0)
+        if n_total:
+            n_valid = cov.get("n_valid", 0)
+            n_low = cov.get("n_low_confidence", 0)
+            n_insuf = cov.get("n_insufficient", 0)
+            valid_pct = n_valid / n_total * 100
+            valid_or_low_pct = (n_valid + n_low) / n_total * 100
+            lines.append("")
+            lines.append("### Baseline Coverage (trend+vol matched)")
+            lines.append("")
+            lines.append(f"- **VALID** (n≥20): {n_valid}/{n_total} ({_pct(valid_pct)})")
+            lines.append(f"- **LOW CONFIDENCE** (5≤n<20): {n_low}")
+            lines.append(f"- **INSUFFICIENT** (n<5): {n_insuf}")
+            lines.append(f"- **Valid or Low Confidence:** {_pct(valid_or_low_pct)}")
 
     # Costs
     lines.append("")
@@ -220,16 +248,24 @@ def _build_summary_md(
             f"| {_pct(boot.get('std_error', 0))} |"
         )
 
-    # Profit concentration
+    # Profit concentration (per-horizon, Q6)
     if "profit_concentration" in robustness_results:
-        pc = robustness_results["profit_concentration"]
+        pc_all = robustness_results["profit_concentration"]
         lines.append("")
         lines.append("---")
-        lines.append("## Profit Concentration")
+        lines.append("## Profit Concentration (by Horizon)")
         lines.append("")
-        lines.append(f"- **Best trade % of total:** {_pct(pc.get('best_trade_pct', 0))}")
-        lines.append(f"- **Best 3 trades % of total:** {_pct(pc.get('best_3_pct', 0))}")
-        lines.append(f"- **Best asset:** {pc.get('best_asset', '—')} ({_pct(pc.get('best_asset_pct', 0))})")
+        lines.append("| Horizon | Best Trade % | Best 3 Trades % | Best Asset | Best Asset % | N Trades |")
+        lines.append("|---------|-------------|----------------|------------|--------------|----------|")
+        for h in sorted(pc_all.keys()):
+            p = pc_all[h]
+            lines.append(
+                f"| {h}d | {_pct(p.get('best_trade_pct', 0))} "
+                f"| {_pct(p.get('best_3_pct', 0))} "
+                f"| {p.get('best_asset', '—')} "
+                f"| {_pct(p.get('best_asset_pct', 0))} "
+                f"| {p.get('n_trades', 0)} |"
+            )
 
     # Decision
     lines.append("")
@@ -295,8 +331,11 @@ def make_decision(
                 ci_crosses_zero = True
                 break
 
-    # Check profit concentration
-    pc = robustness_results.get("profit_concentration", {})
+    # Check profit concentration (per-horizon)
+    pc_all = robustness_results.get("profit_concentration", {})
+    # Use best_horizon for concentration check
+    best_horizon_num = int(best_horizon.replace("horizon_", "").replace("d", "")) if best_horizon else 5
+    pc = pc_all.get(best_horizon_num, {})
     best_trade_pct = pc.get("best_trade_pct", 100)
     if best_trade_pct > 20:
         reasons.append(f"Best trade explains {best_trade_pct:.1f}% of profit (>20%)")

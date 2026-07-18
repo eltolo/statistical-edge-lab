@@ -407,10 +407,10 @@ class TestDecision:
         assert decision == "REJECTED"
 
     def test_research_positive_but_limited(self):
-        metrics = {"horizon_5d": {"mean_return": 1.0, "n_events": 50}}
+        metrics = {"horizon_5d": {"mean_return": 0.5, "n_events": 50}}
         rob = {
-            "bootstrap_5d": {"mean": 1.0, "ci_lower": -0.5, "ci_upper": 2.5},
-            "profit_concentration": {"best_trade_pct": 30, "best_3_pct": 60, "best_asset": "GGAL", "best_asset_pct": 50}
+            "bootstrap_5d": {"mean": 0.5, "ci_lower": -0.5, "ci_upper": 1.5},
+            "profit_concentration": {5: {"best_trade_pct": 30, "best_3_pct": 60, "best_asset": "GGAL", "best_asset_pct": 50, "n_trades": 50, "n_assets": 5}}
         }
         costs = {"total_roundtrip_pct": 0.5}
         decision, reason = make_decision(metrics, rob, costs, 50)
@@ -420,7 +420,7 @@ class TestDecision:
         metrics = {"horizon_5d": {"mean_return": 5.0, "n_events": 100}}
         rob = {
             "bootstrap_5d": {"mean": 5.0, "ci_lower": 2.0, "ci_upper": 8.0},
-            "profit_concentration": {"best_trade_pct": 10, "best_3_pct": 25, "best_asset": "GGAL", "best_asset_pct": 30}
+            "profit_concentration": {5: {"best_trade_pct": 10, "best_3_pct": 25, "best_asset": "GGAL", "best_asset_pct": 30, "n_trades": 100, "n_assets": 8}}
         }
         costs = {"total_roundtrip_pct": 1.96}
         decision, reason = make_decision(metrics, rob, costs, 100)
@@ -475,7 +475,10 @@ class TestWalkForward:
 
 class TestLookAhead:
     def test_forward_returns_after_event(self, sample_ohlcv):
-        """Verify next_open entry: signal at close of T, entry at open of T+1."""
+        """Verify next_open entry: signal at close of T, entry at open of T+1.
+
+        h=1 → entry at open of T+1, exit at close of T+1 (same session).
+        """
         df = sample_ohlcv.copy()
         df["close_usd"] = df["close"]
         df["high_usd"] = df["high"]
@@ -484,9 +487,9 @@ class TestLookAhead:
         event_dates = [df.index[51]]  # signal at close of day 51
         fr = calculate_forward_returns(df, event_dates, [1])
         if not fr[1].empty:
-            # With next_open: entry at day 52 open, exit at day 53 close (h=1)
+            # With next_open: entry at day 52 open, exit at day 52 close (h=1)
             entry_price = df["open_usd"].iloc[52]
-            exit_price = df["close_usd"].iloc[53]
+            exit_price = df["close_usd"].iloc[52]
             expected_return = (exit_price / entry_price - 1) * 100
             assert abs(fr[1].iloc[0]["forward_return"] - expected_return) < 0.001
 

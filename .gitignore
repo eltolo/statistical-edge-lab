@@ -3,6 +3,7 @@
 # Data cache (downloaded market data)
 data/raw/*.csv
 data/raw/*.parquet
+data/raw/*.meta.json
 
 # Virtual environment
 .venv/

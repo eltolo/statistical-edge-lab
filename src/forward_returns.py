@@ -141,9 +141,6 @@ def calculate_forward_returns(
             except (KeyError, TypeError):
                 continue
 
-            if signal_idx + h + 1 > len(df):
-                continue  # Not enough future data
-
             # Signal price = close of signal day
             signal_price = float(df[price_col].iloc[signal_idx])
 
@@ -164,8 +161,22 @@ def calculate_forward_returns(
             if entry_price == 0:
                 continue
 
+            # Check enough future data
+            if entry_mode == "next_open":
+                # h=1: exit at close of same session as entry (open→close of T+1)
+                if signal_idx + h + 1 > len(df):
+                    continue
+            else:
+                if signal_idx + h + 1 > len(df):
+                    continue
+
             # Exit at horizon
-            exit_idx = entry_idx + h
+            if entry_mode == "next_open":
+                # h=1 → close of entry session (same index, close price)
+                exit_idx = entry_idx + h - 1
+            else:  # signal_close
+                # h=1 → close of next session
+                exit_idx = entry_idx + h
             if exit_idx >= len(df):
                 continue
             exit_date = df.index[exit_idx]
@@ -173,8 +184,13 @@ def calculate_forward_returns(
 
             forward_ret = event_forward_return(entry_price, exit_price)
 
-            # MFE/MAE from adjusted high/low during holding period (entry+1 to exit)
-            hold_start = entry_idx + 1
+            # MFE/MAE from adjusted high/low during holding period
+            if entry_mode == "next_open":
+                # Entered at open: this session's high/low count
+                hold_start = entry_idx
+            else:
+                # Entered at close: next session's high/low count
+                hold_start = entry_idx + 1
             hold_end = exit_idx
             if hold_start <= hold_end:
                 high_slice = df[high_col].iloc[hold_start:hold_end + 1]

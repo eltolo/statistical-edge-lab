@@ -7,9 +7,11 @@ Audit P0 #4: Correct ADR ratio formula (local * ratio / adr).
 Audit P0 #16: Adjusted prices for OHLC.
 """
 
+import json
 import logging
+import hashlib
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import yfinance as yf
@@ -18,6 +20,7 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 CACHE_DIR = Path(__file__).parent.parent / "data" / "raw"
+CACHE_SCHEMA_VERSION = "1.0"
 
 # ── Instrument registry (Audit P0 #4) ──
 # Explicit metadata per ticker. No symbol guessing.
@@ -46,6 +49,120 @@ INSTRUMENTS = {
 ADR_RATIOS = {
     "GGAL": 10,
 }
+
+
+# ── Cache metadata helpers (Q7) ──
+
+
+def _cache_meta_path(csv_path: Path) -> Path:
+    """Return companion .meta.json path for a cache CSV."""
+    return csv_path.with_suffix(".meta.json")
+
+
+def _compute_content_hash(df: pd.DataFrame) -> str:
+    """Compute SHA256 of the CSV content for integrity."""
+    content = df.to_csv().encode("utf-8")
+    return hashlib.sha256(content).hexdigest()
+
+
+def _write_cache_with_metadata(
+    df: pd.DataFrame,
+    csv_path: Path,
+    ticker: str,
+    yahoo_ticker: str,
+    source: str,
+    requested_start: str,
+    requested_end: str,
+    auto_adjust: bool = False,
+):
+    """Write CSV + companion metadata file."""
+    df.to_csv(csv_path)
+    content_hash = _compute_content_hash(df)
+    first_date = str(df.index.min().date()) if len(df) else None
+    last_date = str(df.index.max().date()) if len(df) else None
+
+    meta = {
+        "ticker": ticker,
+        "yahoo_ticker": yahoo_ticker,
+        "source": source,
+        "requested_start": requested_start,
+        "requested_end": requested_end,
+        "downloaded_at": datetime.now(timezone.utc).isoformat(),
+        "first_available_date": first_date,
+        "last_available_date": last_date,
+        "n_rows": len(df),
+        "auto_adjust": auto_adjust,
+        "schema_version": CACHE_SCHEMA_VERSION,
+        "content_sha256": content_hash,
+    }
+    meta_path = _cache_meta_path(csv_path)
+    with open(meta_path, "w") as f:
+        json.dump(meta, f, indent=2)
+    logger.info(f"Cache metadata written to {meta_path}")
+
+
+def _validate_cache_metadata(
+    csv_path: Path,
+    ticker: str,
+    requested_start: str,
+    requested_end: str,
+    source: str,
+) -> Optional[dict]:
+    """
+    Validate cache metadata against requested params.
+
+    Returns metadata dict if valid, None if cache should be skipped.
+    """
+    meta_path = _cache_meta_path(csv_path)
+    if not meta_path.exists():
+        logger.info(f"No metadata for {csv_path.name} — skipping cache")
+        return None
+
+    try:
+        with open(meta_path) as f:
+            meta = json.load(f)
+    except Exception as e:
+        logger.warning(f"Cannot read metadata {meta_path}: {e}")
+        return None
+
+    # Schema version check
+    if meta.get("schema_version") != CACHE_SCHEMA_VERSION:
+        logger.info(f"Cache schema mismatch for {ticker}: {meta.get('schema_version')} != {CACHE_SCHEMA_VERSION}")
+        return None
+
+    # Source check
+    if meta.get("source") != source:
+        logger.info(f"Cache source mismatch for {ticker}: {meta.get('source')} != {source}")
+        return None
+
+    # Coverage check: requested range must be within cached range
+    # yfinance uses exclusive end, so a cached range starting <= requested_start
+    # and ending >= requested_end means we have at least as much data as needed.
+    meta_req_start = meta.get("requested_start")
+    meta_req_end = meta.get("requested_end")
+    if meta_req_start and meta_req_end:
+        if requested_start < meta_req_start or requested_end > meta_req_end:
+            logger.info(f"Cache coverage insufficient for {ticker}: "
+                        f"cached request [{meta_req_start}, {meta_req_end}], "
+                        f"needs [{requested_start}, {requested_end}]")
+            return None
+        logger.info(f"  Cached range [{meta_req_start}, {meta_req_end}] covers request")
+
+    # Content integrity (verify hash)
+    try:
+        df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+        current_hash = _compute_content_hash(df)
+        if current_hash != meta.get("content_sha256"):
+            logger.warning(f"Content hash mismatch for {ticker} — cache corrupted")
+            return None
+    except Exception as e:
+        logger.warning(f"Cannot verify cache integrity for {ticker}: {e}")
+        return None
+
+    logger.info(f"Cache valid for {ticker}: req=[{meta_req_start}, {meta_req_end}], "
+                f"actual=[{meta.get('first_available_date')}, {meta.get('last_available_date')}], "
+                f"rows={meta.get('n_rows', '?')}")
+    return meta
 
 
 def instrument_info(ticker: str) -> dict:
@@ -93,15 +210,23 @@ def load_data(
         yahoo_ticker = info["yahoo"]
         cache_path = CACHE_DIR / f"{yahoo_ticker.replace('^', '_')}.csv"
 
-        # Try cache first
+        # Try cache first (with metadata validation)
+        cache_valid = False
         if use_cache and cache_path.exists() and not force_download:
-            try:
-                df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
-                logger.info(f"Loaded {raw_ticker} from cache ({len(df)} rows)")
-                result[raw_ticker] = df
-                continue
-            except Exception as e:
-                logger.warning(f"Cache read failed for {raw_ticker}: {e}")
+            meta = _validate_cache_metadata(
+                cache_path, raw_ticker, start, end, source
+            )
+            if meta is not None:
+                try:
+                    df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
+                    logger.info(f"Loaded {raw_ticker} from cache ({len(df)} rows)")
+                    result[raw_ticker] = df
+                    cache_valid = True
+                except Exception as e:
+                    logger.warning(f"Cache read failed for {raw_ticker}: {e}")
+
+        if cache_valid:
+            continue
 
         logger.info(f"Downloading {raw_ticker} (-> {yahoo_ticker}) from {start} to {end}")
         try:
@@ -149,8 +274,10 @@ def load_data(
             df = df[[c for c in keep if c in df.columns]]
 
             if use_cache:
-                df.to_csv(cache_path)
-                logger.info(f"Cached {raw_ticker} ({len(df)} rows)")
+                _write_cache_with_metadata(
+                    df, cache_path, raw_ticker, yahoo_ticker,
+                    source, start, end, auto_adjust=False,
+                )
 
             result[raw_ticker] = df
 
@@ -248,7 +375,10 @@ def load_ccl_series(start: str, end: str) -> Optional[pd.DataFrame]:
 
         result = merged[["ccl"]]
         cache_path = CACHE_DIR / "ccl_proxy.csv"
-        result.to_csv(cache_path)
+        _write_cache_with_metadata(
+            result, cache_path, "ccl_proxy", "ccl_proxy",
+            "yahoo_ggal_dual", start, end,
+        )
         logger.info(f"Built CCL proxy from GGAL dual ({len(result)} rows), ratio={ratio}")
         return result
 
