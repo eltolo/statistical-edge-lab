@@ -2,12 +2,12 @@
 event_detector.py — Statistical Edge Lab
 Phase 2: Detect event occurrences based on configurable conditions.
 
-Spec §8: Event definition via YAML (conditions with operator/value).
-Spec §9: Cooldown period to remove overlapping events.
+Audit P0 #6: Supports list-of-dicts conditions (multiple rules per feature).
+Audit P0 #11: Session-based cooldown (trading days, not calendar days).
 """
 
 import logging
-from typing import Optional
+from typing import Optional, Union
 from pathlib import Path
 
 import pandas as pd
@@ -16,8 +16,6 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-
-# Operator mapping: maps string operators to comparison functions
 OPERATORS = {
     ">": np.greater,
     "<": np.less,
@@ -29,23 +27,16 @@ OPERATORS = {
 
 
 def load_event_config(path: str) -> dict:
-    """Load event configuration from YAML file."""
     with open(path) as f:
-        config = yaml.safe_load(f)
-    return config
+        return yaml.safe_load(f)
 
 
 def evaluate_condition(
     series: pd.Series,
     operator: str,
-    value: float,
+    value: Union[float, str],
 ) -> pd.Series:
-    """
-    Evaluate a single condition against a data series.
-
-    Example:
-        evaluate_condition(df['return_3d'], '<', -0.03)
-    """
+    """Evaluate a single condition. Supports numeric and string values."""
     op_func = OPERATORS.get(operator)
     if op_func is None:
         raise ValueError(f"Unknown operator: {operator}")
@@ -54,16 +45,16 @@ def evaluate_condition(
 
 def detect_events(
     df: pd.DataFrame,
-    conditions: dict,
-    feature_prefix: str = "",
+    conditions: Union[dict, list],
 ) -> pd.Series:
     """
     Detect dates where ALL conditions are true.
 
     Args:
         df: DataFrame with computed features
-        conditions: dict of {feature_name: {operator: ..., value: ...}}
-        feature_prefix: optional prefix for condition keys (e.g., 'close_')
+        conditions: Either:
+            - list of dicts: [{"feature": "rsi_14", "operator": "<", "value": 30}, ...]
+            - dict (legacy): {"rsi_14": {"operator": "<", "value": 30}, ...}
 
     Returns:
         Boolean Series (indexed by date) where True = event occurred.
@@ -73,49 +64,68 @@ def detect_events(
 
     mask = pd.Series(True, index=df.index)
 
-    for feature, rule in conditions.items():
-        if not isinstance(rule, dict) or "operator" not in rule:
-            logger.warning(f"Invalid rule for {feature}: {rule}")
-            continue
+    # Parse conditions into list of rules
+    if isinstance(conditions, list):
+        rules = conditions
+    elif isinstance(conditions, dict):
+        # Legacy format: convert
+        rules = []
+        for feature, rule in conditions.items():
+            if isinstance(rule, dict) and "operator" in rule:
+                rules.append({"feature": feature, **rule})
+            else:
+                logger.warning(f"Skipping invalid rule: {feature}={rule}")
+    else:
+        logger.error(f"Invalid conditions type: {type(conditions)}")
+        return pd.Series(False, index=df.index)
 
-        # Build column name
-        col = feature_prefix + feature
+    for rule in rules:
+        feature = rule.get("feature")
+        operator = rule.get("operator")
+        value = rule.get("value")
 
-        if col not in df.columns:
-            logger.warning(f"Feature column '{col}' not found in DataFrame")
+        if feature is None or operator is None:
+            logger.warning(f"Invalid rule (missing feature/operator): {rule}")
             mask = pd.Series(False, index=df.index)
             break
 
-        operator = rule["operator"]
-        value = rule["value"]
-        condition_mask = evaluate_condition(df[col], operator, value)
+        if feature not in df.columns:
+            logger.warning(f"Feature column '{feature}' not found in DataFrame")
+            mask = pd.Series(False, index=df.index)
+            break
+
+        condition_mask = evaluate_condition(df[feature], operator, value)
         mask = mask & condition_mask
 
     return mask
 
 
-def apply_cooldown(
+def apply_cooldown_sessions(
     event_mask: pd.Series,
-    cooldown_days: int,
+    df: pd.DataFrame,
+    cooldown_sessions: int,
 ) -> pd.Series:
     """
-    Remove overlapping events within cooldown_days.
-    Keeps the FIRST event in each cluster.
+    Audit P0 #11: Cooldown based on TRADING SESSIONS, not calendar days.
 
-    Spec §9: Events that occur close together must not be treated
-    as independent observations.
+    Keeps the first event in each cluster, then skips cooldown_sessions
+    trading days before considering the next event.
     """
     if not event_mask.any():
         return event_mask
 
-    result = pd.Series(False, index=event_mask.index)
-    event_dates = pd.DatetimeIndex(event_mask[event_mask].index).sort_values()
+    # Get positions of all true events in the DataFrame
+    event_positions = np.where(event_mask.values)[0]
+    if len(event_positions) == 0:
+        return event_mask
 
-    last_kept = None
-    for d in event_dates:
-        if last_kept is None or (pd.Timestamp(d) - pd.Timestamp(last_kept)).days >= cooldown_days:
-            result[d] = True
-            last_kept = d
+    result = pd.Series(False, index=event_mask.index)
+    last_kept_pos = -cooldown_sessions - 1
+
+    for pos in event_positions:
+        if pos - last_kept_pos > cooldown_sessions:
+            result.iloc[pos] = True
+            last_kept_pos = pos
 
     n_raw = event_mask.sum()
     n_kept = result.sum()
@@ -130,17 +140,17 @@ def apply_cooldown(
 
 def get_event_dates(
     df: pd.DataFrame,
-    conditions: dict,
-    cooldown_days: int = 10,
+    conditions: Union[dict, list],
+    cooldown_sessions: int = 10,
     min_events: int = 1,
 ) -> list[pd.Timestamp]:
     """
-    Detect events, apply cooldown, and return sorted list of event dates.
+    Detect events, apply session-based cooldown, return sorted event dates.
 
     Returns empty list if fewer than min_events found.
     """
     event_mask = detect_events(df, conditions)
-    event_mask = apply_cooldown(event_mask, cooldown_days)
+    event_mask = apply_cooldown_sessions(event_mask, df, cooldown_sessions)
     event_dates = event_mask[event_mask].index.sort_values().tolist()
 
     if len(event_dates) < min_events:
@@ -152,17 +162,13 @@ def get_event_dates(
 
 def detect_events_all_assets(
     data: dict[str, pd.DataFrame],
-    conditions: dict,
-    cooldown_days: int = 10,
+    conditions: Union[dict, list],
+    cooldown_sessions: int = 10,
 ) -> dict[str, list[pd.Timestamp]]:
-    """
-    Detect events across all assets in the universe.
-
-    Returns dict[ticker -> list of event dates].
-    """
+    """Detect events across all assets. Returns dict[ticker -> event dates]."""
     result = {}
     for ticker, df in data.items():
-        dates = get_event_dates(df, conditions, cooldown_days)
+        dates = get_event_dates(df, conditions, cooldown_sessions)
         if dates:
             result[ticker] = dates
             logger.info(f"{ticker}: {len(dates)} independent events")

@@ -1,29 +1,35 @@
 # Universo de activos del Statistical Edge Lab
-# MVP: liquidity argentine equities + reference assets
+# Audit P0 #10: Targets + References separados
 
-argentina:
-  tickers:
-    - GGAL.BA
-    - YPFD.BA
-    - PAMP.BA
-    - BBAR.BA
-    - BMA.BA
-    - TGSU2.BA
-    - CEPU.BA
-    - TXAR.BA
+targets:
+  - ticker: GGAL.BA
+    market: argentina
+  - ticker: YPFD.BA
+    market: argentina
+  - ticker: PAMP.BA
+    market: argentina
+  - ticker: BBAR.BA
+    market: argentina
+  - ticker: BMA.BA
+    market: argentina
+  - ticker: TGSU2.BA
+    market: argentina
+  - ticker: CEPU.BA
+    market: argentina
+  - ticker: TXAR.BA
+    market: argentina
 
-reference:
-  tickers:
-    - SPY    # S&P 500
-    - QQQ    # Nasdaq
-    - EWZ    # Brazil
-    - ARGT   # Argentina MSCI
+references:
+  - ticker: SPY
+    role: global_benchmark
+  - ticker: QQQ
+    role: technology_benchmark
+  - ticker: EWZ
+    role: regional_benchmark
+  - ticker: ARGT
+    role: argentina_usd_reference
 
 benchmark: ^MERV
-
 date_start: "2015-01-01"
 date_end: "2026-07-17"
-
-data_source: yahoo   # yahoo | duckdb | csv
-
-currency: ARS        # default currency for raw data
+data_source: yahoo

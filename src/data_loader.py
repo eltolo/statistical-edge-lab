@@ -2,8 +2,9 @@
 data_loader.py — Statistical Edge Lab
 Phase 1: Load and cache market data from yfinance or DuckDB.
 
-Spec §7: Required data fields per asset:
-  date, open, high, low, close, adjusted_close, volume
+Audit P0 #4: Instrument metadata for explicit ticker resolution.
+Audit P0 #4: Correct ADR ratio formula (local * ratio / adr).
+Audit P0 #16: Adjusted prices for OHLC.
 """
 
 import logging
@@ -18,23 +19,54 @@ logger = logging.getLogger(__name__)
 
 CACHE_DIR = Path(__file__).parent.parent / "data" / "raw"
 
+# ── Instrument registry (Audit P0 #4) ──
+# Explicit metadata per ticker. No symbol guessing.
+INSTRUMENTS = {
+    # Argentine equities
+    "GGAL.BA":  {"yahoo": "GGAL.BA",  "market": "argentina", "currency": "ARS"},
+    "YPFD.BA":  {"yahoo": "YPFD.BA",  "market": "argentina", "currency": "ARS"},
+    "PAMP.BA":  {"yahoo": "PAMP.BA",  "market": "argentina", "currency": "ARS"},
+    "BBAR.BA":  {"yahoo": "BBAR.BA",  "market": "argentina", "currency": "ARS"},
+    "BMA.BA":   {"yahoo": "BMA.BA",   "market": "argentina", "currency": "ARS"},
+    "TGSU2.BA": {"yahoo": "TGSU2.BA", "market": "argentina", "currency": "ARS"},
+    "CEPU.BA":  {"yahoo": "CEPU.BA",  "market": "argentina", "currency": "ARS"},
+    "TXAR.BA":  {"yahoo": "TXAR.BA",  "market": "argentina", "currency": "ARS"},
+    # US ETFs
+    "SPY":  {"yahoo": "SPY",  "market": "usa", "currency": "USD"},
+    "QQQ":  {"yahoo": "QQQ",  "market": "usa", "currency": "USD"},
+    "EWZ":  {"yahoo": "EWZ",  "market": "usa", "currency": "USD"},
+    "ARGT": {"yahoo": "ARGT", "market": "usa", "currency": "USD"},
+    # ADRs (explicit — never route to .BA)
+    "GGAL": {"yahoo": "GGAL", "market": "usa", "currency": "USD", "instrument_type": "adr"},
+    # Benchmarks
+    "^MERV": {"yahoo": "^MERV", "market": "argentina", "currency": "ARS"},
+}
 
-def _ticker_to_yahoo(ticker: str) -> str:
-    """Normalize ticker for yfinance. Local AR tickers keep .BA suffix."""
-    t = ticker.strip().upper()
-    if t == "^MERV":
-        return "^MERV"
-    if not t.endswith(".BA") and not t.startswith("^"):
-        # Check if it's a US ticker (SPY, QQQ, etc.)
-        us_tickers = {"SPY", "QQQ", "EWZ", "ARGT", "DIA", "IWM", "EFA", "EEM"}
-        if t not in us_tickers:
-            return t + ".BA"
-    return t
+# ADR ratios (Audit P0 #4): local shares represented by 1 ADR
+ADR_RATIOS = {
+    "GGAL": 10,
+}
 
 
-def _ticker_from_yahoo(ticker: str) -> str:
-    """Reverse normalization."""
-    return ticker.replace(".BA", "")
+def instrument_info(ticker: str) -> dict:
+    """Get instrument metadata. Raises KeyError if unknown."""
+    t = ticker.strip()
+    if t in INSTRUMENTS:
+        return INSTRUMENTS[t]
+    # Fallback: if ends with .BA, assume argentina
+    if t.endswith(".BA"):
+        return {"yahoo": t, "market": "argentina", "currency": "ARS"}
+    # Fallback: assume US stock
+    return {"yahoo": t, "market": "usa", "currency": "USD"}
+
+
+def market_for_ticker(ticker: str) -> str:
+    """Return 'argentina' or 'usa'."""
+    return instrument_info(ticker).get("market", "usa")
+
+
+def is_argentine(ticker: str) -> bool:
+    return market_for_ticker(ticker) == "argentina"
 
 
 def load_data(
@@ -51,15 +83,15 @@ def load_data(
     Returns dict[ticker -> DataFrame with columns:
         date, open, high, low, close, adj_close, volume
     ]
-    Date is the index (datetime).
-    Uses CSV for caching (no pyarrow dependency).
+    Also adds 'open_adj', 'high_adj', 'low_adj' from adjustment factor.
     """
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
     result = {}
     for raw_ticker in tickers:
-        ticker = _ticker_to_yahoo(raw_ticker)
-        cache_path = CACHE_DIR / f"{ticker.replace('^', '_')}.csv"
+        info = instrument_info(raw_ticker)
+        yahoo_ticker = info["yahoo"]
+        cache_path = CACHE_DIR / f"{yahoo_ticker.replace('^', '_')}.csv"
 
         # Try cache first
         if use_cache and cache_path.exists() and not force_download:
@@ -71,9 +103,9 @@ def load_data(
             except Exception as e:
                 logger.warning(f"Cache read failed for {raw_ticker}: {e}")
 
-        logger.info(f"Downloading {raw_ticker} (-> {ticker}) from {start} to {end}")
+        logger.info(f"Downloading {raw_ticker} (-> {yahoo_ticker}) from {start} to {end}")
         try:
-            yf_ticker = yf.Ticker(ticker)
+            yf_ticker = yf.Ticker(yahoo_ticker)
             df = yf_ticker.history(start=start, end=end, auto_adjust=False)
 
             if df.empty:
@@ -90,20 +122,32 @@ def load_data(
                 "Adj Close": "adj_close",
             })
             df.index = pd.to_datetime(df.index)
-            # Normalize to timezone-naive (yfinance returns NY timezone)
             if df.index.tz is not None:
                 df.index = df.index.tz_convert(None)
+            # Normalize to midnight for cross-market date matching
+            df.index = df.index.normalize()
             df.index.name = "date"
 
             # Ensure adj_close exists
             if "adj_close" not in df.columns:
                 df["adj_close"] = df["close"]
 
-            # Keep only required columns
-            cols = ["open", "high", "low", "close", "adj_close", "volume"]
-            df = df[[c for c in cols if c in df.columns]]
+            # Build adjusted OHLC (Audit P0 #16)
+            if "adj_close" in df.columns and "close" in df.columns:
+                adj_factor = df["adj_close"] / df["close"].replace(0, float("nan"))
+                df["open_adj"] = df["open"] * adj_factor
+                df["high_adj"] = df["high"] * adj_factor
+                df["low_adj"] = df["low"] * adj_factor
+            else:
+                df["open_adj"] = df["open"]
+                df["high_adj"] = df["high"]
+                df["low_adj"] = df["low"]
 
-            # Cache as CSV
+            # Keep required columns
+            keep = ["open", "high", "low", "close", "adj_close",
+                    "open_adj", "high_adj", "low_adj", "volume"]
+            df = df[[c for c in keep if c in df.columns]]
+
             if use_cache:
                 df.to_csv(cache_path)
                 logger.info(f"Cached {raw_ticker} ({len(df)} rows)")
@@ -123,7 +167,6 @@ def load_benchmark(
     end: str,
     source: str = "yahoo",
 ) -> Optional[pd.DataFrame]:
-    """Load benchmark data (e.g., ^MERV)."""
     data = load_data([ticker], start, end, source)
     return data.get(ticker)
 
@@ -132,10 +175,10 @@ def load_ccl_series(start: str, end: str) -> Optional[pd.DataFrame]:
     """
     Load daily CCL implied rate for ARS->USD conversion.
 
-    For MVP, uses ARGT/GGAL CCL proxy from yfinance.
-    Falls back to loading pre-computed CCL from DuckDB if available.
+    Audit P0 #4: Correct ADR formula, explicit ticker resolution,
+    no backfill of future values, fail if missing for AR assets.
     """
-    # Try DuckDB first (ecosystem source of truth)
+    # Try DuckDB first
     duckdb_path = Path.home() / "shared" / "data" / "db" / "duckdb"
     try:
         import duckdb
@@ -156,34 +199,59 @@ def load_ccl_series(start: str, end: str) -> Optional[pd.DataFrame]:
     except Exception:
         logger.info("DuckDB CCL not available, using yfinance proxy")
 
-    # Fallback: build CCL proxy from GGAL.BA / GGAL (ADR)
+    # Fallback: build CCL proxy from GGAL.BA / GGAL ADR
     try:
-        # Load local GGAL.BA in ARS
         local = load_data(["GGAL.BA"], start, end, use_cache=True)
         if "GGAL.BA" not in local:
+            logger.error("CCL: Cannot load GGAL.BA")
             return None
         local_df = local["GGAL.BA"]
 
-        # Load GGAL ADR in USD
+        # Load GGAL ADR — correct: 'GGAL' resolves to US ADR via instrument_info
         adr = load_data(["GGAL"], start, end, use_cache=True)
         if "GGAL" not in adr:
+            logger.error("CCL: Cannot load GGAL ADR")
             return None
         adr_df = adr["GGAL"]
 
-        # Merge and calculate CCL
-        merged = local_df[["close"]].rename(columns={"close": "ars"})
-        merged = merged.join(adr_df[["close"]].rename(columns={"close": "usd"}), how="inner")
-        # GGAL ADR ratio = 10 (1 ADR = 10 local shares)
-        merged["ccl"] = merged["ars"] / (merged["usd"] * 10)
-        merged = merged[["ccl"]]
+        # Normalize indices for joining
+        local_df.index = local_df.index.normalize()
+        adr_df.index = adr_df.index.normalize()
 
-        # Cache as CSV
+        # Merge
+        merged = local_df[["close"]].rename(columns={"close": "local_ars"})
+        adr_close = adr_df[["close"]].rename(columns={"close": "adr_usd"})
+        merged = merged.join(adr_close, how="inner")
+
+        if merged.empty:
+            logger.error("CCL: No overlapping dates between GGAL.BA and GGAL ADR")
+            return None
+
+        # Correct formula: CCL = local_ars * ratio / adr_usd  (Audit P0 #4)
+        ratio = ADR_RATIOS.get("GGAL", 10)
+        merged["ccl"] = merged["local_ars"] * ratio / merged["adr_usd"]
+
+        # Validate CCL range (Audit P0 #4)
+        merged = merged[(merged["ccl"] > 10) & (merged["ccl"] < 5000)]
+        if merged.empty:
+            logger.error("CCL: All values outside valid range [10, 5000]")
+            return None
+
+        # Forward-fill only within reasonable gap (5 sessions)
+        merged["ccl"] = merged["ccl"].ffill(limit=5)
+        merged = merged.dropna(subset=["ccl"])
+
+        # Remove rows before first valid CCL
+        first_valid = merged["ccl"].first_valid_index()
+        if first_valid:
+            merged = merged.loc[first_valid:]
+
+        result = merged[["ccl"]]
         cache_path = CACHE_DIR / "ccl_proxy.csv"
-        merged.to_csv(cache_path)
+        result.to_csv(cache_path)
+        logger.info(f"Built CCL proxy from GGAL dual ({len(result)} rows), ratio={ratio}")
+        return result
 
-        logger.info(f"Built CCL proxy from GGAL dual ({len(merged)} rows)")
-        return merged
     except Exception as e:
-        logger.warning(f"Could not build CCL proxy: {e}")
-
-    return None
+        logger.error(f"CCL proxy failed: {e}")
+        return None

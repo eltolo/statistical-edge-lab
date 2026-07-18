@@ -119,10 +119,10 @@ def _get_forward_returns(
     horizon: int,
     price_col: str = "close_usd",
 ) -> np.ndarray:
-    """Extract forward returns for event dates."""
-    prices = df[price_col]
-    forward = prices.pct_change(periods=-horizon).shift(-horizon) * 100
-    return forward[event_mask].dropna().values
+    """Extract forward returns for event dates using shared function."""
+    from forward_returns import forward_return_series
+    fr = forward_return_series(df[price_col], horizon)
+    return fr[event_mask].dropna().values
 
 
 def leave_one_asset_out(

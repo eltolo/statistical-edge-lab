@@ -132,22 +132,40 @@ def high_minus_low(df: pd.DataFrame, window: int = 60) -> pd.Series:
     return (df["close"] - high_60) / high_60.replace(0, np.nan)
 
 
-def compute_all_features(df: pd.DataFrame) -> pd.DataFrame:
+def compute_all_features(
+    df: pd.DataFrame,
+    price_col: str = "close",
+    high_col: str = "high",
+    low_col: str = "low",
+) -> pd.DataFrame:
     """
     Compute all features used by the 5 experiments.
 
+    Audit P0 #5: Uses configurable price/high/low columns.
+    For Argentine assets, pass price_col="close_usd", high_col="high_usd",
+    low_col="low_usd" so features are computed in hard currency.
+
     Returns DataFrame with added feature columns.
-    Works on both ARS and USD DataFrames (uses 'close' column).
     """
     result = df.copy()
-    close = result["close"]
+    close = result[price_col]
+
+    # Need high/low from the same currency for ATR, distance_to_high
+    if high_col in result.columns and low_col in result.columns:
+        result["_high"] = result[high_col]
+        result["_low"] = result[low_col]
+        has_hl = True
+    else:
+        result["_high"] = close
+        result["_low"] = close
+        has_hl = False
 
     # SMAs
     result["sma_20"] = sma(close, 20)
     result["sma_60"] = sma(close, 60)
     result["sma_200"] = sma(close, 200)
 
-    # Returns
+    # Returns (in hard currency)
     result["return_1d"] = rolling_return(close, 1)
     result["return_3d"] = rolling_return(close, 3)
     result["return_5d"] = rolling_return(close, 5)
@@ -158,20 +176,23 @@ def compute_all_features(df: pd.DataFrame) -> pd.DataFrame:
     # RSI
     result["rsi_14"] = rsi(close, 14)
 
-    # ATR
-    result["atr_14"] = atr(result, 14)
+    # ATR (from USD high/low)
+    hl_df = pd.DataFrame({"high": result["_high"], "low": result["_low"], "close": close})
+    result["atr_14"] = atr(hl_df, 14)
     result["atr_percentile_60d"] = percentile_rank(result["atr_14"], 60)
 
     # Volume
     if "volume" in result.columns:
         result["volume_ratio_20d"] = volume_ratio(result["volume"], 20)
 
-    # Distance from SMAs
+    # Distance from SMAs (in hard currency)
     result["dist_sma_20"] = distance_from_sma(close, 20)
     result["dist_sma_200"] = distance_from_sma(close, 200)
 
-    # Distance from 60d high
-    result["distance_to_high_60d"] = high_minus_low(result, 60)
+    # Distance from 60d high (in hard currency)
+    result["distance_to_high_60d"] = (
+        close - result["_high"].rolling(window=60).max()
+    ) / result["_high"].rolling(window=60).max().replace(0, np.nan)
 
     # Z-score of 3d returns
     result["return_3d_zscore"] = zscore(result["return_3d"], 60)
@@ -182,12 +203,15 @@ def compute_all_features(df: pd.DataFrame) -> pd.DataFrame:
     # Close above SMA200 (boolean)
     result["close_above_sma_200"] = (close > result["sma_200"]).astype(float)
 
-    # Close breaks 20d high
+    # Close breaks 20d high (in hard currency)
     result["close_breaks_high_20d"] = (
-        close > result["high"].rolling(window=20).max().shift(1)
+        close > result["_high"].rolling(window=20).max().shift(1)
     ).astype(float)
 
     # SMA200 slope
     result["sma_200_slope"] = sma_slope(close, 200, 20)
+
+    # Clean up temporary columns
+    result = result.drop(columns=["_high", "_low"], errors="ignore")
 
     return result

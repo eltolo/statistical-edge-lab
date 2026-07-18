@@ -35,8 +35,8 @@ from feature_engine import (
     sma, rsi, atr, rolling_return, zscore, volume_ratio,
     distance_from_sma, bollinger_b, compute_all_features
 )
-from event_detector import detect_events, apply_cooldown, get_event_dates
-from forward_returns import calculate_forward_returns, summarize_forward_returns
+from event_detector import detect_events, apply_cooldown_sessions, get_event_dates
+from forward_returns import forward_return_series, calculate_forward_returns, summarize_forward_returns
 from regime_detector import classify_trend_regime, classify_volatility_regime
 from baseline_comparator import unconditional_baseline, regime_conditioned_baseline
 from cost_model import roundtrip_cost_total, apply_costs_to_return, break_even_cost
@@ -78,11 +78,11 @@ def sample_ccl():
 
 @pytest.fixture
 def sample_event_conditions():
-    """Conditions for a simple event."""
-    return {
-        "rsi_14": {"operator": "<", "value": 30},
-        "return_3d": {"operator": "<", "value": -0.03},
-    }
+    """Conditions for a simple event (list format, P0 #6)."""
+    return [
+        {"feature": "rsi_14", "operator": "<", "value": 30},
+        {"feature": "return_3d", "operator": "<", "value": -0.03},
+    ]
 
 
 @pytest.fixture
@@ -139,7 +139,12 @@ class TestFeatureEngine:
         assert len(b) == 200
 
     def test_compute_all_features(self, sample_ohlcv):
-        result = compute_all_features(sample_ohlcv)
+        # Add USD columns for the feature engine
+        df = sample_ohlcv.copy()
+        df["close_usd"] = df["close"]
+        df["high_usd"] = df["high"]
+        df["low_usd"] = df["low"]
+        result = compute_all_features(df)
         expected_cols = [
             "sma_20", "sma_60", "sma_200",
             "return_1d", "return_3d", "return_5d", "return_10d", "return_20d", "return_60d",
@@ -161,29 +166,29 @@ class TestFeatureEngine:
 class TestEventDetection:
     def test_detect_events_all_true(self, sample_ohlcv):
         """When no conditions, all dates are events."""
-        mask = detect_events(sample_ohlcv, {})
+        mask = detect_events(sample_ohlcv, [])
         assert mask.all()
 
     def test_detect_events_none(self, sample_ohlcv):
         """Impossible condition → no events."""
-        conditions = {"rsi_14": {"operator": ">", "value": 200}}
+        conditions = [{"feature": "rsi_14", "operator": ">", "value": 200}]
         mask = detect_events(sample_ohlcv, conditions)
         assert not mask.any()
 
     def test_apply_cooldown(self):
-        """Cooldown removes nearby events."""
+        """Cooldown removes nearby events using session-based logic."""
         dates = pd.date_range("2020-01-01", periods=10, freq="B")
+        df = pd.DataFrame({"close": range(10)}, index=dates)
         mask = pd.Series([True, True, False, False, True, False, False, False, True, True],
                          index=dates)
-        result = apply_cooldown(mask, 3)
-        # First event kept, second within 3d removed, fifth kept, etc.
+        result = apply_cooldown_sessions(mask, df, 3)
         assert result.iloc[0] == True
         assert result.sum() < mask.sum()
 
     def test_get_event_dates_empty(self, sample_ohlcv):
         """Impossible condition returns empty list."""
         dates = get_event_dates(
-            sample_ohlcv, {"rsi_14": {"operator": ">", "value": 200}}, 10
+            sample_ohlcv, [{"feature": "rsi_14", "operator": ">", "value": 200}], 10
         )
         assert dates == []
 
@@ -193,10 +198,29 @@ class TestEventDetection:
 # ============================================================
 
 class TestForwardReturns:
+    def test_forward_return_series(self):
+        """Audit P0 #1: Verify forward_return_series formula."""
+        prices = pd.Series([100.0, 110.0, 121.0, 133.1])
+        # 1-period: 110/100-1=10%, 121/110-1=10%, 133.1/121-1=10%, NaN
+        fr = forward_return_series(prices, 1)
+        assert abs(fr.iloc[0] - 10.0) < 0.01, f"Got {fr.iloc[0]}"
+        assert abs(fr.iloc[1] - 10.0) < 0.01, f"Got {fr.iloc[1]}"
+        assert abs(fr.iloc[2] - 10.0) < 0.01, f"Got {fr.iloc[2]}"
+        assert pd.isna(fr.iloc[3])
+        # 2-period: 121/100-1=21%, 133.1/110-1=21%, NaN, NaN
+        fr2 = forward_return_series(prices, 2)
+        assert abs(fr2.iloc[0] - 21.0) < 0.01, f"Got {fr2.iloc[0]}"
+        assert abs(fr2.iloc[1] - 21.0) < 0.01, f"Got {fr2.iloc[1]}"
+        assert pd.isna(fr2.iloc[2])
+        assert pd.isna(fr2.iloc[3])
+
     def test_calculate_forward_returns(self, sample_ohlcv):
         df = sample_ohlcv.copy()
         df["close_usd"] = df["close"]
-        event_dates = [df.index[50], df.index[100]]
+        df["high_usd"] = df["high"]
+        df["low_usd"] = df["low"]
+        df["open_usd"] = df["open"]
+        event_dates = [df.index[51], df.index[101]]  # skip idx 0 for next_open entry
         result = calculate_forward_returns(df, event_dates, [5, 10])
         assert 5 in result
         assert 10 in result
@@ -208,7 +232,10 @@ class TestForwardReturns:
     def test_summarize_forward_returns(self, sample_ohlcv):
         df = sample_ohlcv.copy()
         df["close_usd"] = df["close"]
-        event_dates = [df.index[50], df.index[100]]
+        df["high_usd"] = df["high"]
+        df["low_usd"] = df["low"]
+        df["open_usd"] = df["open"]
+        event_dates = [df.index[51], df.index[101]]
         fr = calculate_forward_returns(df, event_dates, [5])
         summary = summarize_forward_returns(fr[5], 5)
         assert summary["n_events"] == 2
@@ -223,10 +250,12 @@ class TestForwardReturns:
         """MFE should always be >= 0, MAE <= 0 in raw form."""
         df = sample_ohlcv.copy()
         df["close_usd"] = df["close"]
-        event_dates = [df.index[50], df.index[100], df.index[150]]
+        df["high_usd"] = df["high"]
+        df["low_usd"] = df["low"]
+        event_dates = [df.index[60], df.index[100], df.index[150]]
         fr = calculate_forward_returns(df, event_dates, [5])
         if not fr[5].empty:
-            assert (fr[5]["mfe"] >= fr[5]["forward_return"]).all() or fr[5].empty
+            assert (fr[5]["mfe"] >= 0).all() or fr[5].empty
 
 
 # ============================================================
@@ -446,15 +475,18 @@ class TestWalkForward:
 
 class TestLookAhead:
     def test_forward_returns_after_event(self, sample_ohlcv):
-        """Verify forward returns use data AFTER the event date, not including it."""
+        """Verify next_open entry: signal at close of T, entry at open of T+1."""
         df = sample_ohlcv.copy()
         df["close_usd"] = df["close"]
-        event_dates = [df.index[50]]
+        df["high_usd"] = df["high"]
+        df["low_usd"] = df["low"]
+        df["open_usd"] = df["open"]
+        event_dates = [df.index[51]]  # signal at close of day 51
         fr = calculate_forward_returns(df, event_dates, [1])
         if not fr[1].empty:
-            entry_idx = df.index.get_loc(event_dates[0])
-            entry_price = df["close"].iloc[entry_idx]
-            exit_price = df["close"].iloc[entry_idx + 1]
+            # With next_open: entry at day 52 open, exit at day 53 close (h=1)
+            entry_price = df["open_usd"].iloc[52]
+            exit_price = df["close_usd"].iloc[53]
             expected_return = (exit_price / entry_price - 1) * 100
             assert abs(fr[1].iloc[0]["forward_return"] - expected_return) < 0.001
 

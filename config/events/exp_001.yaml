@@ -1,29 +1,42 @@
 # EXP-001: Moderate Pullback
-# Spec §18 — Positive 60-day trend, price above SMA200, 3d return -3% to -7%
+# Audit P0 #6: Bounded condition [-7%, -3%] via list rules.
+# Audit P0 #11: cooldown_sessions instead of cooldown_days.
 
 experiment:
   id: exp_001
   family: pullback
-  description: "Moderate pullback within an uptrend: price above SMA200, positive 60d trend, 3d retracement -3% to -7%"
+  description: "Moderate pullback within an uptrend: price above SMA200, positive 60d trend, 3d retracement -7% to -3%"
   hypothesis: "A moderate short-term decline inside an established uptrend produces favorable forward returns."
 
 event:
+  # Audit P0 #6: List of conditions (allows multiple rules for same feature)
   conditions:
-    close_above_sma_200:
+    - feature: close_above_sma_200
       operator: "=="
       value: 1.0
-    return_60d:
+
+    - feature: return_60d
       operator: ">"
       value: 0.10
-    # Three-day return less than -3%
-    return_3d:
+
+    # Bounded: -7% <= return_3d < -3%
+    - feature: return_3d
       operator: "<"
       value: -0.03
 
-  cooldown_days: 10
+    - feature: return_3d
+      operator: ">="
+      value: -0.07
+
+  # Audit P0 #11: Session-based cooldown (max forward horizon = 20)
+  cooldown_sessions: 20
   forward_horizons: [1, 3, 5, 10, 20]
 
 validation:
   discovery_pct: 60
   validation_pct: 20
   holdout_pct: 20
+
+research:
+  primary_horizon: 10
+  secondary_horizons: [1, 3, 5, 20]
