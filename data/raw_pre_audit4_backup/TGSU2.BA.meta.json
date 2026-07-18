@@ -1,0 +1,14 @@
+{
+  "ticker": "TGSU2.BA",
+  "yahoo_ticker": "TGSU2.BA",
+  "source": "yahoo",
+  "requested_start": "2015-01-01",
+  "requested_end": "2026-07-17",
+  "downloaded_at": "2026-07-18T04:14:33.285790+00:00",
+  "first_available_date": "2015-01-02",
+  "last_available_date": "2026-07-16",
+  "n_rows": 2817,
+  "auto_adjust": false,
+  "schema_version": "1.0",
+  "content_sha256": "82d17b4082152ac94e25dbefa8ff396be1c8c16880ac0ecfe570e36014e36bc3"
+}

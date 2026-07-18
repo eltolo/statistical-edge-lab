@@ -1,0 +1,14 @@
+{
+  "ticker": "SPY",
+  "yahoo_ticker": "SPY",
+  "source": "yahoo",
+  "requested_start": "2015-01-01",
+  "requested_end": "2026-07-17",
+  "downloaded_at": "2026-07-18T04:14:34.850497+00:00",
+  "first_available_date": "2015-01-02",
+  "last_available_date": "2026-07-16",
+  "n_rows": 2900,
+  "auto_adjust": false,
+  "schema_version": "1.0",
+  "content_sha256": "ee60971ef8293d395fca3d71f71ec3fbd6d334b7b51e60f5b03d04fc266ea6c5"
+}

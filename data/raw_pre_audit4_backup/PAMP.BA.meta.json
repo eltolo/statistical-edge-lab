@@ -1,0 +1,14 @@
+{
+  "ticker": "PAMP.BA",
+  "yahoo_ticker": "PAMP.BA",
+  "source": "yahoo",
+  "requested_start": "2015-01-01",
+  "requested_end": "2026-07-17",
+  "downloaded_at": "2026-07-18T04:14:31.628397+00:00",
+  "first_available_date": "2015-01-02",
+  "last_available_date": "2026-07-16",
+  "n_rows": 2817,
+  "auto_adjust": false,
+  "schema_version": "1.0",
+  "content_sha256": "04df75fed7fd2a0eb4983638af32bdf6bb48b30b1ca767189c8334842fdba54e"
+}

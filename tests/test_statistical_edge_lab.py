@@ -413,18 +413,27 @@ class TestDecision:
             "profit_concentration": {5: {"best_trade_pct": 30, "best_3_pct": 60, "best_asset": "GGAL", "best_asset_pct": 50, "n_trades": 50, "n_assets": 5}}
         }
         costs = {"total_roundtrip_pct": 0.5}
-        decision, reason = make_decision(metrics, rob, costs, 50)
+        decision, reason = make_decision(metrics, rob, costs, 50, primary_horizon=5)
         assert decision in ("RESEARCH", "REJECTED")
 
     def test_candidate(self):
-        metrics = {"horizon_5d": {"mean_return": 5.0, "n_events": 100}}
+        metrics = {"horizon_5d": {"mean_return": 5.0, "n_events": 100, "median_return": 4.0}}
         rob = {
             "bootstrap_5d": {"mean": 5.0, "ci_lower": 2.0, "ci_upper": 8.0},
             "profit_concentration": {5: {"best_trade_pct": 10, "best_3_pct": 25, "best_asset": "GGAL", "best_asset_pct": 30, "n_trades": 100, "n_assets": 8}}
         }
         costs = {"total_roundtrip_pct": 1.96}
-        decision, reason = make_decision(metrics, rob, costs, 100)
-        # With net > 0 and 100 events, should be CANDIDATE
+        split = {
+            "validation": {"horizon_5d": {"median_return": 3.0, "n_events": 20}},
+            "holdout": {"horizon_5d": {"median_return": 2.0, "n_events": 20}},
+        }
+        baselines = {5: {"baseline_coverage": {"n_events": 100, "n_valid": 80, "n_low_confidence": 15, "n_insufficient": 5}}}
+        decision, reason = make_decision(
+            metrics, rob, costs, 100,
+            primary_horizon=5,
+            split_net_metrics=split,
+            baselines=baselines,
+        )
         assert decision == "CANDIDATE"
 
 

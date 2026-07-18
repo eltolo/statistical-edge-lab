@@ -1,0 +1,14 @@
+{
+  "ticker": "CEPU.BA",
+  "yahoo_ticker": "CEPU.BA",
+  "source": "yahoo",
+  "requested_start": "2015-01-01",
+  "requested_end": "2026-07-17",
+  "downloaded_at": "2026-07-18T04:14:33.813969+00:00",
+  "first_available_date": "2015-01-02",
+  "last_available_date": "2026-07-16",
+  "n_rows": 2818,
+  "auto_adjust": false,
+  "schema_version": "1.0",
+  "content_sha256": "2584ca6451d12fec9d3a46b6b8f66d0442f759a9d558dce77ed76f9e1c25ec44"
+}

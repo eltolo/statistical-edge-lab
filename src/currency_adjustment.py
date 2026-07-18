@@ -22,15 +22,29 @@ def adjust_to_usd(
     """
     Convert ARS prices to USD using CCL rate.
 
-    Produces: close_usd, open_usd, high_usd, low_usd, ccl
+    Audit 4: Uses adjusted OHLC (open_adj, high_adj, low_adj, adj_close)
+    for USD conversion, not raw OHLC.
+    Audit 4: Uses LEFT JOIN so CCL can be forward-filled on missing dates.
 
-    Audit P0 #5: Converts OHLC for feature computation in hard currency.
-    Audit P0 #4: Does not backfill beyond limit; no fillna(1.0).
+    Produces: close_usd, open_usd, high_usd, low_usd, ccl
     """
     result = df.copy()
 
-    # Merge CCL rates
-    merged = result.join(ccl_series[["ccl"]], how="inner")
+    # Determine which price columns to dollarize (prefer adjusted)
+    price_cols = []
+    for raw_col, adj_col in [
+        ("close", "adj_close"),
+        ("open", "open_adj"),
+        ("high", "high_adj"),
+        ("low", "low_adj"),
+    ]:
+        if adj_col in result.columns:
+            price_cols.append((raw_col, adj_col))
+        elif raw_col in result.columns:
+            price_cols.append((raw_col, raw_col))
+
+    # Audit 4: LEFT JOIN so CCL can be forward-filled
+    merged = result.join(ccl_series[["ccl"]], how="left")
 
     if merged.empty:
         raise ValueError("No overlapping dates between asset and CCL series. "
@@ -51,13 +65,14 @@ def adjust_to_usd(
     if merged.empty:
         raise ValueError("All rows dropped after CCL validation.")
 
-    # Convert prices
-    for col in ["close", "open", "high", "low"]:
-        if col in merged.columns:
-            merged[f"{col}_usd"] = merged[col] / merged["ccl"]
+    # Convert prices (adjusted → USD)
+    for raw_col, adj_col in price_cols:
+        if adj_col in merged.columns:
+            merged[f"{raw_col}_usd"] = merged[adj_col] / merged["ccl"]
 
     result = merged.copy()
     logger.info(f"Dollarized via CCL: {len(result)} rows, "
+                f"using adjusted prices, "
                 f"CCL range [{result['ccl'].min():.1f} - {result['ccl'].max():.1f}]")
     return result
 
@@ -85,10 +100,13 @@ def dollarize_dataframe(
     data: dict[str, pd.DataFrame],
     ccl_series: Optional[pd.DataFrame] = None,
 ) -> dict[str, pd.DataFrame]:
-    """Apply USD adjustment to Argentine tickers. Fail if CCL missing for AR assets."""
+    """Apply USD adjustment to Argentine tickers. Fail if CCL missing for AR assets.
+
+    Audit 4: Also dollarizes benchmark ^MERV for regime computation in USD.
+    """
     result = {}
     for ticker, df in data.items():
-        # Check if argentine by suffix or by market info
+        # Check if argentine by suffix, market info, or benchmark
         is_ar = ticker.endswith(".BA") or ticker == "^MERV"
 
         if is_ar:
@@ -110,3 +128,11 @@ def dollarize_dataframe(
             result[ticker] = df
 
     return result
+
+
+def dollarize_single_benchmark(
+    bench_df: pd.DataFrame,
+    ccl_series: pd.DataFrame,
+) -> pd.DataFrame:
+    """Dollarize a single benchmark DataFrame for regime computation in USD (Audit 4)."""
+    return adjust_to_usd(bench_df, ccl_series)

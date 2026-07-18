@@ -27,10 +27,16 @@ from data_loader import (
     instrument_info, market_for_ticker, is_argentine,
 )
 from data_validator import validate_all
-from currency_adjustment import dollarize_dataframe
+from currency_adjustment import dollarize_dataframe, dollarize_single_benchmark
 from feature_engine import compute_all_features
-from event_detector import load_event_config, detect_events_all_assets
-from forward_returns import calculate_forward_returns, compute_overall_metrics
+from event_detector import (
+    load_event_config, detect_events_all_assets,
+    validate_event_conditions,
+)
+from forward_returns import (
+    calculate_forward_returns, compute_overall_metrics,
+    build_canonical_table, enrich_canonical_with_baselines,
+)
 from regime_detector import compute_all_regimes
 from baseline_comparator import compute_all_baselines
 from cost_model import load_costs, summarize_costs, roundtrip_cost_total
@@ -85,6 +91,16 @@ def run_experiment(event_path: str, universe_path: str, costs_path: str):
 
     experiment_id = exp.get("id", "unnamed")
     logger.info(f"Experiment: {experiment_id}")
+
+    # ── Validate event conditions against schema (Audit 4) ──
+    conditions = event.get("conditions", [])
+    if isinstance(conditions, list):
+        errors = validate_event_conditions(conditions)
+        if errors:
+            for err in errors:
+                logger.error(f"Config error: {err}")
+            sys.exit(1)
+        logger.info("Config validation: ✅ conditions within known ranges")
 
     logger.info(f"Loading universe: {universe_path}")
     universe_config = load_config(universe_path)
@@ -160,16 +176,36 @@ def run_experiment(event_path: str, universe_path: str, costs_path: str):
             data_usd[ticker] = compute_all_features(data_usd[ticker])
         logger.info(f"  {ticker}: {len(data_usd[ticker])} rows (USD features={is_ar})")
 
-    # ── STEP 5: Market regimes ──
+    # ── STEP 5: Market regimes (Audit 4: benchmark in USD) ──
     logger.info("=" * 60)
-    logger.info("STEP 5: Classifying market regimes")
+    logger.info("STEP 5: Classifying market regimes (benchmark in USD)")
     if bench is not None:
-        bench_feat = compute_all_features(bench)
+        # Dollarize benchmark if Argentine
+        if is_argentine(benchmark_ticker):
+            if ccl is not None:
+                bench_usd = dollarize_single_benchmark(bench, ccl)
+            else:
+                logger.warning("CCL not available for benchmark — using nominal ARS")
+                bench_usd = bench.copy()
+        else:
+            bench_usd = bench.copy()
+            bench_usd["close_usd"] = bench_usd["close"]
+
+        bench_feat = compute_all_features(
+            bench_usd,
+            price_col="close_usd",
+            high_col="high_usd" if "high_usd" in bench_usd.columns else "high",
+            low_col="low_usd" if "low_usd" in bench_usd.columns else "low",
+        )
         for ticker in data_usd:
             data_usd[ticker] = compute_all_regimes(
-                data_usd[ticker], bench_feat["close"]
+                data_usd[ticker], bench_feat["close_usd"]
             )
-        logger.info("  Regimes computed from benchmark")
+        # Also attach regimes to the benchmark df
+        data_usd[benchmark_ticker] = compute_all_regimes(
+            bench_usd, bench_feat["close_usd"]
+        )
+        logger.info("  Regimes computed from USD benchmark")
 
     # ── STEP 6: Detect events (ONLY on targets) ──
     logger.info("=" * 60)
@@ -193,6 +229,10 @@ def run_experiment(event_path: str, universe_path: str, costs_path: str):
         logger.warning("No events detected. Aborting.")
         sys.exit(0)
 
+    # ── Read primary horizon (Audit 4) ──
+    primary_horizon = event_config.get("research", {}).get("primary_horizon", horizons[0])
+    logger.info(f"Primary horizon: {primary_horizon}d")
+
     # ── STEP 7: Forward returns (entry_mode=next_open per P0 #2) ──
     logger.info("=" * 60)
     logger.info("STEP 7: Calculating forward returns + MFE/MAE")
@@ -214,22 +254,36 @@ def run_experiment(event_path: str, universe_path: str, costs_path: str):
                 df["transaction_cost_pct"] = cost_pct
                 df["net_return_pct"] = df["forward_return"] - cost_pct
 
-    # Combine all events for metrics
-    combined_returns = {}
-    for h in horizons:
-        all_fr = []
-        for ticker in raw_returns:
-            if h in raw_returns[ticker] and not raw_returns[ticker][h].empty:
-                df = raw_returns[ticker][h].copy()
-                df["ticker"] = ticker
-                all_fr.append(df)
-        combined_returns[h] = pd.concat(all_fr) if all_fr else pd.DataFrame()
-
-    metrics = compute_overall_metrics(combined_returns)
-
-    # ── STEP 8: Baselines ──
+    # ── STEP 8: Temporal split + canonical table (Audit 4) ──
     logger.info("=" * 60)
-    logger.info("STEP 8: Computing baselines")
+    logger.info("STEP 8: Temporal split + canonical table")
+    splitter = TemporalSplit(
+        discovery_pct=val_config.get("discovery_pct", 60) / 100,
+        validation_pct=val_config.get("validation_pct", 20) / 100,
+        holdout_pct=val_config.get("holdout_pct", 20) / 100,
+    )
+    flat_dates = [d for _, d in all_event_dates]
+    splitter.fit(data_usd, flat_dates)
+
+    # Build canonical trade table (enriched with regimes and split)
+    canonical = build_canonical_table(raw_returns, data_usd, splitter, horizons)
+    n_total = len(canonical)
+    n_purged = len(canonical[canonical["temporal_split"] == "boundary_crossing"])
+    if n_purged:
+        logger.info(f"  Purged {n_purged} boundary-crossing trades from canonical table")
+
+    # Separate by split for formal metrics
+    canonical_valid = canonical[canonical["temporal_split"] != "boundary_crossing"].copy()
+    canonical_by_split = {
+        split: canonical_valid[canonical_valid["temporal_split"] == split].copy()
+        for split in ["discovery", "validation", "holdout"]
+    }
+    # Also include full sample (all valid)
+    canonical_by_split["full_sample"] = canonical_valid.copy()
+
+    # ── STEP 9: Baselines ──
+    logger.info("=" * 60)
+    logger.info("STEP 9: Computing baselines")
     all_baselines = {}
     for ticker, dates in events.items():
         if ticker in data_usd and len(dates) > 0:
@@ -240,15 +294,26 @@ def run_experiment(event_path: str, universe_path: str, costs_path: str):
             )
             all_baselines[ticker] = ticker_bl
 
-    # Per-horizon aggregate baselines (event-weighted, using exact_matched_mean)
+    # Enrich canonical table with baselines
+    canonical = enrich_canonical_with_baselines(canonical, all_baselines)
+    canonical_valid = canonical[canonical["temporal_split"] != "boundary_crossing"].copy()
+    canonical_by_split = {
+        split: canonical_valid[canonical_valid["temporal_split"] == split].copy()
+        for split in ["discovery", "validation", "holdout", "full_sample"]
+    }
+    # full_sample = all valid
+    canonical_by_split["full_sample"] = canonical_valid.copy()
+
+    # Per-horizon aggregate baselines (for report)
     baselines = {}
-    baseline_coverage = {}
+    baseline_coverage_per_h = {}
     for h in horizons:
         unconditional_vals = []
         matched_vals = []
         trend_only_vals = []
         benchmark_vals = []
         weights = []
+        cov_h = {"n_events": 0, "n_valid": 0, "n_low_confidence": 0, "n_insufficient": 0}
         for ticker, bl in all_baselines.items():
             if h in bl:
                 n_events = len(events.get(ticker, []))
@@ -257,84 +322,63 @@ def run_experiment(event_path: str, universe_path: str, costs_path: str):
                 trend_only_vals.append(bl[h]["trend_only_fallback_mean"] * n_events)
                 benchmark_vals.append(bl[h]["benchmark"] * n_events)
                 weights.append(n_events)
-                # Aggregate coverage
+                # Per-horizon coverage (Audit 4: fix accumulation across horizons)
                 cov = bl[h].get("baseline_coverage", {})
                 for k in ("n_events", "n_valid", "n_low_confidence", "n_insufficient"):
-                    baseline_coverage.setdefault(k, 0)
-                    baseline_coverage[k] += cov.get(k, 0)
+                    cov_h[k] += cov.get(k, 0)
         total_w = sum(weights) or 1
         baselines[h] = {
             "unconditional": sum(unconditional_vals) / total_w if unconditional_vals else 0.0,
             "exact_matched_mean": sum(matched_vals) / total_w if matched_vals else 0.0,
             "trend_only_fallback_mean": sum(trend_only_vals) / total_w if trend_only_vals else 0.0,
             "benchmark": sum(benchmark_vals) / total_w if benchmark_vals else 0.0,
+            "baseline_coverage": cov_h,
         }
+        if cov_h["n_events"]:
+            cov_h["valid_pct"] = round(cov_h["n_valid"] / cov_h["n_events"] * 100, 1)
+            cov_h["valid_or_low_pct"] = round(
+                (cov_h["n_valid"] + cov_h["n_low_confidence"]) / cov_h["n_events"] * 100, 1
+            )
+        logger.info(f"  h={h}d baseline coverage: {cov_h['n_valid']}/{cov_h['n_events']} VALID "
+                    f"({cov_h.get('valid_pct', 0)}%)")
 
-    # Attach baseline coverage to first horizon for report
-    if baseline_coverage and baselines:
-        first_h = list(baselines.keys())[0]
-        baselines[first_h]["baseline_coverage"] = baseline_coverage
-
-    # Log baseline coverage summary
-    if baseline_coverage.get("n_events", 0):
-        n = baseline_coverage["n_events"]
-        logger.info(f"  Baseline coverage: {baseline_coverage['n_valid']}/{n} VALID, "
-                    f"{baseline_coverage['n_low_confidence']}/{n} LOW_CONFIDENCE, "
-                    f"{baseline_coverage['n_insufficient']}/{n} INSUFFICIENT")
-
-    # ── STEP 9: Costs summary ──
+    # ── STEP 10: Costs summary ──
     logger.info("=" * 60)
-    logger.info("STEP 9: Transaction costs")
+    logger.info("STEP 10: Transaction costs")
     cost_summary = summarize_costs(cost_config)
 
-    # ── STEP 10: Temporal split (P0 #8, Q3 purge) ──
+    # ── STEP 11: Metrics (net_return_pct is formal, Audit 4) ──
     logger.info("=" * 60)
-    logger.info("STEP 10: Temporal split")
-    splitter = TemporalSplit(
-        discovery_pct=val_config.get("discovery_pct", 60) / 100,
-        validation_pct=val_config.get("validation_pct", 20) / 100,
-        holdout_pct=val_config.get("holdout_pct", 20) / 100,
-    )
-    flat_dates = [d for _, d in all_event_dates]
-    splitter.fit(data_usd, flat_dates)
+    logger.info("STEP 11: Computing metrics")
 
-    # Classify every trade by signal+entry+exit dates (Q3)
-    # Discard boundary_crossing from formal split metrics
-    split_classified = {}  # horizon -> {split_name -> df}
-    n_boundary = 0
-    for h in horizons:
-        split_classified[h] = {"discovery": [], "validation": [], "holdout": []}
-        if h not in combined_returns or combined_returns[h].empty:
-            continue
-        for _, row in combined_returns[h].iterrows():
-            split_label = splitter.assign_trade_split({
-                "signal_date": row["signal_date"],
-                "entry_date": row["entry_date"],
-                "exit_date": row["exit_date"],
-            })
-            if split_label == "boundary_crossing":
-                n_boundary += 1
-            elif split_label in split_classified[h]:
-                split_classified[h][split_label].append(row.to_dict())
-
-    # Compute per-split metrics from classified trades
-    split_metrics = {}
-    for split_name in ["discovery", "validation", "holdout"]:
-        split_combined = {}
+    def split_to_horizons(canonical_split: pd.DataFrame) -> dict:
+        """Split canonical df into per-horizon dict for compute_overall_metrics."""
+        result = {}
         for h in horizons:
-            records = split_classified[h][split_name]
-            if records:
-                split_combined[h] = pd.DataFrame(records)
-            else:
-                split_combined[h] = pd.DataFrame()
-        split_metrics[split_name] = compute_overall_metrics(split_combined)
+            h_df = canonical_split[canonical_split["horizon"] == h]
+            result[h] = h_df
+        return result
 
-    if n_boundary > 0:
-        logger.info(f"  Purged {n_boundary} boundary-crossing trades from split metrics (Q3)")
+    # Formal: net_return_pct
+    net_metrics_full = compute_overall_metrics(
+        split_to_horizons(canonical_valid), return_col="net_return_pct"
+    )
+    # Diagnostic: gross metrics
+    gross_metrics_full = compute_overall_metrics(
+        split_to_horizons(canonical_valid), return_col="forward_return"
+    )
 
-    # ── STEP 11: Robustness ──
+    # Per-split net metrics
+    split_net_metrics = {}
+    for split_name in ["discovery", "validation", "holdout"]:
+        df_s = canonical_by_split.get(split_name, pd.DataFrame())
+        split_net_metrics[split_name] = compute_overall_metrics(
+            split_to_horizons(df_s), return_col="net_return_pct"
+        )
+
+    # ── STEP 12: Robustness (from canonical table, net returns) ──
     logger.info("=" * 60)
-    logger.info("STEP 11: Running robustness tests")
+    logger.info("STEP 12: Running robustness tests")
     robustness_results = run_all_robustness(
         target_data, conditions, cooldown, horizons
     )
@@ -342,39 +386,65 @@ def run_experiment(event_path: str, universe_path: str, costs_path: str):
     for h in horizons:
         key = f"bootstrap_{h}d"
         if key not in robustness_results:
-            if h in combined_returns and not combined_returns[h].empty:
-                rets = combined_returns[h]["forward_return"].values
-                robustness_results[key] = bootstrap_ci(rets)
+            h_returns = canonical_valid.loc[
+                canonical_valid["horizon"] == h, "net_return_pct"
+            ].dropna().values
+            if len(h_returns):
+                robustness_results[key] = bootstrap_ci(h_returns)
             else:
                 robustness_results[key] = {"mean": 0, "ci_lower": 0, "ci_upper": 0, "std_error": 0}
 
-    # ── STEP 12: Decision ──
+    # ── STEP 13: Decision (Audit 4: uses primary_horizon, net, holdout, edge) ──
     logger.info("=" * 60)
-    logger.info("STEP 12: Making decision")
-    decision, reason = make_decision(metrics, robustness_results, cost_summary, n_total)
+    logger.info("STEP 13: Making decision")
+
+    # Build decision inputs from canonical table at primary horizon
+    ph_key = f"horizon_{primary_horizon}d"
+
+    # Extract primary horizon net metrics by split
+    def ph_metrics(metrics_dict: dict) -> dict:
+        return metrics_dict.get(ph_key, {})
+
+    decision, reason = make_decision(
+        metrics=net_metrics_full,
+        robustness_results=robustness_results,
+        cost_summary=cost_summary,
+        n_total_events=len(canonical_valid),
+        primary_horizon=primary_horizon,
+        split_net_metrics=split_net_metrics,
+        baselines=baselines,
+    )
     logger.info(f"Decision: {decision}")
     logger.info(f"Reason: {reason}")
 
-    # ── STEP 13: Generate report ──
+    # ── STEP 14: Generate report ──
     logger.info("=" * 60)
-    logger.info("STEP 13: Generating report")
+    logger.info("STEP 14: Generating report")
     output_dir = resolve_results_dir(experiment_id)
+
+    # Store canonical table as CSV
+    canonical.to_csv(output_dir / "canonical_trades.csv", index=False)
+
     report_data = {
         "config": event_config,
-        "event_data": {"raw_returns": {str(k): v for k, v in combined_returns.items()}},
-        "metrics": metrics,
+        "event_data": {"raw_returns": split_to_horizons(canonical_valid)},
+        "metrics": net_metrics_full,
+        "gross_metrics": gross_metrics_full,
         "baselines": baselines,
         "cost_summary": cost_summary,
         "robustness_results": robustness_results,
         "decision": decision,
         "decision_reason": reason,
         "output_dir": output_dir,
+        "primary_horizon": primary_horizon,
+        "split_net_metrics": split_net_metrics,
     }
     summary_path = generate_summary(**report_data)
 
     print("\n" + "=" * 60)
     print(f"  EXPERIMENT: {experiment_id}")
-    print(f"  Events: {n_total}")
+    print(f"  Primary horizon: {primary_horizon}d")
+    print(f"  Events: {n_total} (purged: {n_purged})")
     print(f"  Decision: {decision}")
     print(f"  Reason: {reason}")
     print(f"  Report: {summary_path}")

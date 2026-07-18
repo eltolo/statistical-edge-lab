@@ -1,0 +1,14 @@
+{
+  "ticker": "BMA.BA",
+  "yahoo_ticker": "BMA.BA",
+  "source": "yahoo",
+  "requested_start": "2015-01-01",
+  "requested_end": "2026-07-17",
+  "downloaded_at": "2026-07-18T04:14:32.742021+00:00",
+  "first_available_date": "2015-01-02",
+  "last_available_date": "2026-07-16",
+  "n_rows": 2817,
+  "auto_adjust": false,
+  "schema_version": "1.0",
+  "content_sha256": "103facd207082adbb455c6a01cf40577d302799c86266f9fa55911a11a983f45"
+}

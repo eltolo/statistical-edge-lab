@@ -1,0 +1,14 @@
+{
+  "ticker": "ccl_proxy",
+  "yahoo_ticker": "ccl_proxy",
+  "source": "yahoo_ggal_dual",
+  "requested_start": "2015-01-01",
+  "requested_end": "2026-07-17",
+  "downloaded_at": "2026-07-18T04:14:37.501378+00:00",
+  "first_available_date": "2015-01-02",
+  "last_available_date": "2026-07-16",
+  "n_rows": 2743,
+  "auto_adjust": false,
+  "schema_version": "1.0",
+  "content_sha256": "38a71b3d5d5f1dfb7b03237388781e67e81f0200a279e1621889ac8adee1da4f"
+}

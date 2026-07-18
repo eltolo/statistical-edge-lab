@@ -1,0 +1,14 @@
+{
+  "ticker": "BBAR.BA",
+  "yahoo_ticker": "BBAR.BA",
+  "source": "yahoo",
+  "requested_start": "2015-01-01",
+  "requested_end": "2026-07-17",
+  "downloaded_at": "2026-07-18T04:14:32.186659+00:00",
+  "first_available_date": "2015-01-02",
+  "last_available_date": "2026-07-16",
+  "n_rows": 2817,
+  "auto_adjust": false,
+  "schema_version": "1.0",
+  "content_sha256": "79fa876c7b4feb524a34ea7f0a5adb117bc94e8fb3ebda701ff6edfbb5678f64"
+}

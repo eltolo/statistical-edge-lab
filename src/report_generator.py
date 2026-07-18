@@ -45,6 +45,9 @@ def generate_summary(
     decision: str,
     decision_reason: str,
     output_dir: Path,
+    gross_metrics: Optional[dict] = None,
+    primary_horizon: Optional[int] = None,
+    split_net_metrics: Optional[dict] = None,
 ):
     """
     Generate complete experiment report.
@@ -84,7 +87,10 @@ def generate_summary(
     # --- summary.md ---
     summary = _build_summary_md(
         config, metrics, baselines, cost_summary,
-        robustness_results, decision, decision_reason
+        robustness_results, decision, decision_reason,
+        gross_metrics=gross_metrics,
+        primary_horizon=primary_horizon,
+        split_net_metrics=split_net_metrics,
     )
     with open(output_dir / "summary.md", "w") as f:
         f.write(summary)
@@ -122,6 +128,9 @@ def _write_robustness_csv(robustness: dict, path: Path):
 def _build_summary_md(
     config, metrics, baselines, cost_summary,
     robustness_results, decision, decision_reason,
+    gross_metrics=None,
+    primary_horizon=None,
+    split_net_metrics=None,
 ) -> str:
     """Build the summary.md Markdown content."""
     exp = config.get("experiment", {})
@@ -231,6 +240,30 @@ def _build_summary_md(
         net = gross - cost_pct
         lines.append(f"| {horizon}d | {_pct(gross)} | {_pct(cost_pct)} | {_pct(net)} |")
 
+    # Primary horizon
+    if primary_horizon:
+        lines.append("")
+        lines.append("---")
+        lines.append(f"## Primary Horizon: {primary_horizon}d (Audit 4)")
+        lines.append("")
+        ph_key = f"horizon_{primary_horizon}d"
+        if split_net_metrics:
+            lines.append("| Split | N Events | Net Mean % | Net Median % |")
+            lines.append("|-------|----------|------------|--------------|")
+            for split_name in ["discovery", "validation", "holdout"]:
+                m = split_net_metrics.get(split_name, {}).get(ph_key, {})
+                lines.append(
+                    f"| {split_name} | {m.get('n_events', 0)} "
+                    f"| {_pct(m.get('mean_return', 0))} "
+                    f"| {_pct(m.get('median_return', 0))} |"
+                )
+        # Net metrics at primary horizon
+        ph_net = metrics.get(ph_key, {})
+        lines.append("")
+        lines.append(f"**Full sample net mean:** {_pct(ph_net.get('mean_return', 0))}")
+        lines.append(f"**Full sample net median:** {_pct(ph_net.get('median_return', 0))}")
+        lines.append(f"**Win rate:** {_pct(ph_net.get('win_rate', 0) * 100)}")
+
     # Bootstrap
     lines.append("")
     lines.append("---")
@@ -291,77 +324,104 @@ def make_decision(
     robustness_results: dict,
     cost_summary: dict,
     n_total_events: int,
+    primary_horizon: Optional[int] = None,
+    split_net_metrics: Optional[dict] = None,
+    baselines: Optional[dict] = None,
 ) -> tuple[str, str]:
     """
-    Spec §16: Assign decision based on evidence.
+    Audit 4: Decision engine.
+    - Uses predeclared primary_horizon (no horizon shopping)
+    - Metrics are already net_return_pct (from canonical table)
+    - Checks validation + holdout net median
+    - Checks holdout incremental edge
+    - Checks baseline coverage
 
     Returns (decision, reason).
     """
     reasons = []
 
-    # Check minimum events
+    ph = primary_horizon or 5
+    ph_key = f"horizon_{ph}d"
+
+    # ── 1. Minimum events ──
     if n_total_events < 40:
         reasons.append(f"Fewer than 40 independent events ({n_total_events})")
         return "REJECTED", "; ".join(reasons)
 
-    # Check net median return
-    best_horizon = None
-    best_net = -999
-    for h_key, h_data in metrics.items():
-        if h_key.startswith("horizon_"):
-            gross = h_data.get("mean_return", 0)
-            cost_pct = cost_summary.get("total_roundtrip_pct", 1.96)
-            net = gross - cost_pct
-            if net > best_net:
-                best_net = net
-                best_horizon = h_key
+    # ── 2. Full-sample net metrics at primary horizon (Audit 4: no horizon shopping) ──
+    ph_metrics = metrics.get(ph_key, {})
+    ph_net_mean = ph_metrics.get("mean_return", -999)
+    ph_net_median = ph_metrics.get("median_return", -999)
 
-    if best_net <= 0:
-        reasons.append(f"Best net return <= 0 ({best_net:.2f}%)")
+    if ph_net_mean <= 0:
+        reasons.append(f"Primary horizon {ph}d net mean <= 0 ({ph_net_mean:.2f}%)")
         return "REJECTED", "; ".join(reasons)
 
-    # Check incremental edge
-    # (already computed in baseline comparison)
+    # ── 3. Split metrics (Audit 4: validation + holdout required) ──
+    if split_net_metrics:
+        for split_name in ["validation", "holdout"]:
+            sm = split_net_metrics.get(split_name, {}).get(ph_key, {})
+            split_median = sm.get("median_return", -999)
+            n_events_split = sm.get("n_events", 0)
+            if split_median <= 0:
+                reasons.append(f"{split_name} net median <= 0 ({split_median:.2f}%) at {ph}d")
+                return "REJECTED", "; ".join(reasons)
+            if n_events_split < 10:
+                reasons.append(f"{split_name} only {n_events_split} events (< 10)")
+                return "REJECTED", "; ".join(reasons)
 
-    # Check bootstrap CI does not cross zero
-    ci_crosses_zero = False
-    for h_key, boot in robustness_results.items():
-        if h_key.startswith("bootstrap_"):
-            if boot.get("ci_lower", 0) < 0 and boot.get("ci_upper", 0) > 0:
-                ci_crosses_zero = True
-                break
+    # ── 4. Baseline coverage (Audit 4: >50% VALID or LOW_CONFIDENCE) ──
+    if baselines:
+        bl = baselines.get(ph, {})
+        cov = bl.get("baseline_coverage", {})
+        n_total_bl = cov.get("n_events", 0)
+        n_valid_bl = cov.get("n_valid", 0)
+        n_low_bl = cov.get("n_low_confidence", 0)
+        if n_total_bl:
+            valid_or_low_pct = (n_valid_bl + n_low_bl) / n_total_bl * 100
+            if valid_or_low_pct < 50:
+                reasons.append(
+                    f"Baseline coverage {valid_or_low_pct:.0f}% (< 50%%) — max RESEARCH"
+                )
+                return "RESEARCH", "; ".join(reasons)
 
-    # Check profit concentration (per-horizon)
+    # ── 5. Bootstrap CI at primary horizon ──
+    boot_key = f"bootstrap_{ph}d"
+    boot = robustness_results.get(boot_key, {})
+    ci_lower = boot.get("ci_lower", 0)
+    ci_upper = boot.get("ci_upper", 0)
+    ci_crosses_zero = ci_lower < 0 and ci_upper > 0
+
+    # ── 6. Profit concentration at primary horizon ──
     pc_all = robustness_results.get("profit_concentration", {})
-    # Use best_horizon for concentration check
-    best_horizon_num = int(best_horizon.replace("horizon_", "").replace("d", "")) if best_horizon else 5
-    pc = pc_all.get(best_horizon_num, {})
+    pc = pc_all.get(ph, {})
     best_trade_pct = pc.get("best_trade_pct", 100)
     if best_trade_pct > 20:
         reasons.append(f"Best trade explains {best_trade_pct:.1f}% of profit (>20%)")
         if n_total_events < 60:
             return "RESEARCH", "; ".join(reasons)
 
-    # Check break-even cost
+    # ── 7. Check break-even cost ──
     cost_pct = cost_summary.get("total_roundtrip_pct", 1.96)
-    for h_key in [k for k in metrics.keys() if k.startswith("horizon_")]:
-        gross = metrics[h_key].get("mean_return", 0)
-        if gross > cost_pct * 1.5:
-            break
-    else:
+    if ph_net_mean < cost_pct * 1.5:
         reasons.append("Break-even cost insufficient margin over transaction costs")
 
-    # CANDIDATE requirements
+    # ── 8. CANDIDATE check (Audit 4: all conditions must pass) ──
     if (n_total_events >= 60
-        and best_net > 0
+        and ph_net_mean > 0
+        and ph_net_median > 0
         and best_trade_pct <= 20
-        and not ci_crosses_zero):
-        if reasons:
-            return "CANDIDATE", "; ".join(reasons) + "; Meets minimum CANDIDATE requirements"
-        return "CANDIDATE", "Meets all CANDIDATE requirements: sufficient events, positive net return, diversified, CI excludes zero."
+        and not ci_crosses_zero
+        and len(reasons) == 0):
+        return "CANDIDATE", (
+            f"Primary horizon {ph}d: net mean {ph_net_mean:.2f}%, "
+            f"net median {ph_net_median:.2f}%, "
+            f"{n_total_events} events, holdout + validation positive."
+        )
 
-    if best_net > 0:
-        return "RESEARCH", "Positive but insufficient evidence: " + "; ".join(reasons) if reasons else "Positive signal, needs more data."
+    # ── 9. RESEARCH vs REJECTED ──
+    if ph_net_mean > 0:
+        return "RESEARCH", "Positive net return but: " + "; ".join(reasons) if reasons else "Positive signal, needs more data."
 
     return "REJECTED", "; ".join(reasons) if reasons else "No evidence of edge."
 

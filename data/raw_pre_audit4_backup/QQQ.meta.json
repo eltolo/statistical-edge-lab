@@ -1,0 +1,14 @@
+{
+  "ticker": "QQQ",
+  "yahoo_ticker": "QQQ",
+  "source": "yahoo",
+  "requested_start": "2015-01-01",
+  "requested_end": "2026-07-17",
+  "downloaded_at": "2026-07-18T04:14:35.432996+00:00",
+  "first_available_date": "2015-01-02",
+  "last_available_date": "2026-07-16",
+  "n_rows": 2900,
+  "auto_adjust": false,
+  "schema_version": "1.0",
+  "content_sha256": "cdc609168b8fd1d53db5ca305f0d1c18146a2d450f2963bbb8b945966c7b9932"
+}

@@ -51,15 +51,17 @@ El lab asigna hasta CANDIDATE. PAPER_READY lo asigna el pipeline de estrategias.
 | `run_experiment.py` | 5 — CLI | ✅ pipeline 13 pasos + --list/--show |
 | Tests | 5 | ✅ 41 tests (pytest) |
 
-## Experimentos ejecutados
+## Experimentos ejecutados (Pipeline Audit 4 completo)
 
-| Exp | Eventos | Decisión | Nota |
-|:---:|:-------:|:--------:|------|
-| EXP-01: Moderate Pullback | 287 | ❌ REJECTED | Neto -1.41%, costos BYMA lo matan |
-| EXP-02: Pullback With Volume | 74 | ❌ REJECTED | Misma familia, sample chico |
-| EXP-03: Volatility Compression | 1,024 | 🔬 RESEARCH | Coverage baseline 6.5% (evento raro) |
-| EXP-04: Breakout From Compression | 285 | 🔬 RESEARCH | 20d +4.18% neto, concentrado en CEPU |
-| EXP-05: Extreme Decline | 233 | ❌ REJECTED | Neto -0.30% con costos equities (Q5) |
+| Exp | Eventos | Net Full Sample | Net Holdout | Decisión | Nota |
+|:---:|:-------:|:---------------:|:-----------:|:--------:|------|
+| EXP-01: Moderate Pullback | 1,533 | -1.68% | -0.52% | ❌ REJECTED | Primary 10d, todas las splits negativas |
+| EXP-02: Pullback With Volume | 455 | -2.07% | -1.44% | ❌ REJECTED | Primary 1d, sample chico en splits |
+| EXP-03: Volatility Compression | 680 | +6.31% | +1.84% | ❌ REJECTED | Validation -4.03% (no consistente) |
+| EXP-04: Breakout From Compression | 210 | -2.16% | +1.80% | ❌ REJECTED | Solo 5/6 eventos en validation/holdout |
+| EXP-05: Extreme Decline | 939 | -0.13% | +3.99% | ❌ REJECTED | Full sample negativo, holdout sugiere investigación |
+
+** hallazgo principal:** Ningún edge sobrevive costos BYMA (1.96% RT) con pipeline corregido. El lab produce 5/5 REJECTED, que es el resultado correcto.
 
 ---
 

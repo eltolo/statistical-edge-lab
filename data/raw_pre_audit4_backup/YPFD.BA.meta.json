@@ -1,0 +1,14 @@
+{
+  "ticker": "YPFD.BA",
+  "yahoo_ticker": "YPFD.BA",
+  "source": "yahoo",
+  "requested_start": "2015-01-01",
+  "requested_end": "2026-07-17",
+  "downloaded_at": "2026-07-18T04:14:31.144697+00:00",
+  "first_available_date": "2015-01-02",
+  "last_available_date": "2026-07-16",
+  "n_rows": 2817,
+  "auto_adjust": false,
+  "schema_version": "1.0",
+  "content_sha256": "7197bb20c300412a40dabd3c2b7f3c2fba728d3b52c9e9799a6bda8f0947a20a"
+}

@@ -1,0 +1,14 @@
+{
+  "ticker": "^MERV",
+  "yahoo_ticker": "^MERV",
+  "source": "yahoo",
+  "requested_start": "2015-01-01",
+  "requested_end": "2026-07-17",
+  "downloaded_at": "2026-07-18T04:05:52.893668+00:00",
+  "first_available_date": "2015-01-02",
+  "last_available_date": "2026-07-16",
+  "n_rows": 2807,
+  "auto_adjust": false,
+  "schema_version": "1.0",
+  "content_sha256": "9c556317f38c4d3d6a66d59e52d86ab171427fea57ecbeb41483d62c9ebf929f"
+}

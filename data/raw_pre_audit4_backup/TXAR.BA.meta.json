@@ -1,0 +1,14 @@
+{
+  "ticker": "TXAR.BA",
+  "yahoo_ticker": "TXAR.BA",
+  "source": "yahoo",
+  "requested_start": "2015-01-01",
+  "requested_end": "2026-07-17",
+  "downloaded_at": "2026-07-18T04:14:34.230172+00:00",
+  "first_available_date": "2015-01-02",
+  "last_available_date": "2026-07-16",
+  "n_rows": 2817,
+  "auto_adjust": false,
+  "schema_version": "1.0",
+  "content_sha256": "c35c4a2ff7598c28b96a6213aceb7f146c358ea443992222d4f97436ea100272"
+}

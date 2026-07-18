@@ -25,6 +25,91 @@ OPERATORS = {
     "!=": np.not_equal,
 }
 
+# ── Feature schema for config validation (Audit 4) ──
+# Known features with their valid value ranges.
+# Features not in this dict skip range validation.
+FEATURE_SCHEMA = {
+    "atr_percentile_60d": {
+        "description": "Rolling percentile rank of ATR(14) over 60 sessions",
+        "minimum": 0.0,
+        "maximum": 1.0,
+        "unit": "fraction (0.0-1.0)",
+    },
+    "distance_to_high_60d": {
+        "description": "(close - 60d_high) / 60d_high — distance from 60-session high",
+        "minimum": -1.0,
+        "maximum": 0.0,
+        "unit": "decimal (0.0 = at high, -0.05 = 5%% below)",
+    },
+    "return_3d": {
+        "description": "3-session return",
+        "minimum": -1.0,
+        "maximum": 10.0,
+        "unit": "decimal (-0.03 = -3%%)",
+    },
+    "return_60d": {
+        "description": "60-session return",
+        "minimum": -1.0,
+        "maximum": 10.0,
+        "unit": "decimal (0.10 = 10%%)",
+    },
+    "return_3d_zscore": {
+        "description": "Z-score of 3-session returns over 60-session window",
+        "minimum": -10.0,
+        "maximum": 10.0,
+        "unit": "standard deviations",
+    },
+    "volume_ratio_20d": {
+        "description": "Current volume / 20-session average volume",
+        "minimum": 0.0,
+        "maximum": 100.0,
+        "unit": "ratio",
+    },
+    "close_above_sma_200": {
+        "description": "Boolean: close > SMA200",
+        "minimum": 0.0,
+        "maximum": 1.0,
+        "unit": "boolean (0 or 1)",
+    },
+    "close_breaks_high_20d": {
+        "description": "Boolean: close > previous 20-session high",
+        "minimum": 0.0,
+        "maximum": 1.0,
+        "unit": "boolean (0 or 1)",
+    },
+}
+
+
+def validate_event_conditions(conditions: list) -> list[str]:
+    """
+    Validate event condition values against FEATURE_SCHEMA.
+    Returns list of error messages. Empty list = valid.
+    """
+    errors = []
+    for rule in conditions:
+        feature = rule.get("feature")
+        if feature not in FEATURE_SCHEMA:
+            continue  # Unknown feature, skip validation
+
+        schema = FEATURE_SCHEMA[feature]
+        value = rule.get("value")
+
+        if not isinstance(value, (int, float)):
+            continue  # Non-numeric (e.g. string comparison), skip
+
+        if "minimum" in schema and value < schema["minimum"]:
+            errors.append(
+                f"{feature}: value {value} below minimum {schema['minimum']} "
+                f"({schema['unit']}). {schema['description']}"
+            )
+        if "maximum" in schema and value > schema["maximum"]:
+            errors.append(
+                f"{feature}: value {value} above maximum {schema['maximum']} "
+                f"({schema['unit']}). {schema['description']}"
+            )
+
+    return errors
+
 
 def load_event_config(path: str) -> dict:
     with open(path) as f:

@@ -1,0 +1,14 @@
+{
+  "ticker": "GGAL.BA",
+  "yahoo_ticker": "GGAL.BA",
+  "source": "yahoo",
+  "requested_start": "2015-01-01",
+  "requested_end": "2026-07-17",
+  "downloaded_at": "2026-07-18T04:14:36.778223+00:00",
+  "first_available_date": "2015-01-02",
+  "last_available_date": "2026-07-16",
+  "n_rows": 2817,
+  "auto_adjust": false,
+  "schema_version": "1.0",
+  "content_sha256": "fdafa05627cfa6f326f3a3492c76515ec5fd52763add535fd9da2cf7df18e04e"
+}
