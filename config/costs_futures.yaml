@@ -1,13 +1,11 @@
-# Costos de transacción — Statistical Edge Lab
-# Spec §13
+# Costos de futuros ROFEX — 0.30% RT
+futures_rofex:
+  commission_per_side: 0.0015
+  market_fees_per_side: 0.0003
+  estimated_slippage_per_side: 0.0005
+  minimum_total_roundtrip: 0.003
 
 argentina:
-  commission_per_side: 0.007
-  market_fees_per_side: 0.0008
-  estimated_slippage_per_side: 0.002
-  minimum_total_roundtrip: 0.015
-
-futures_rofex:
   commission_per_side: 0.0015
   market_fees_per_side: 0.0003
   estimated_slippage_per_side: 0.0005

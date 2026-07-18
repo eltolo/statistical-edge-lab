@@ -1,59 +1,41 @@
-# Statistical Edge Lab
+# Statistical Edge Lab — Resultados Preliminares
 
-A reusable hypothesis-testing framework for market events.
+## Resumen ejecutivo
 
-**This is NOT an automatic pattern finder or strategy optimizer.**  
-A human defines **what** to test; the lab answers **whether it works**.
+Se ejecutaron 4 de 5 experimentos sobre 8 acciones argentinas (2015-2026).
+Pipeline corregido: features en USD, entry next_open, costos por evento, split temporal.
 
-## Core question
+| Experimento | Eventos | Decisión Equity | Decisión Futuros (0.46% RT) |
+|-------------|---------|:---:|:---:|
+| EXP-01: Moderate Pullback | 287 | ❌ REJECTED | ❌ REJECTED |
+| EXP-03: Volatility Compression | 1,024 | 🔬 RESEARCH | 🔬 RESEARCH |
+| EXP-04: Breakout From Compression | 285 | 🔬 RESEARCH | 🟡 CANDIDATE (concentrado) |
+| **EXP-05: Extreme Decline** | 233 | 🔬 RESEARCH | 🟢 **CANDIDATE** |
 
-> When a defined event occurs, do future returns improve relative to comparable
-> market conditions, after transaction costs and out-of-sample validation?
+## Candidato principal: EXP-05
 
-## Quick start
+| Métrica | 3 días | 5 días | 10 días |
+|---------|:---:|:---:|:---:|
+| Retorno bruto | +1.76% | +2.07% | +0.99% |
+| Neto futuros (0.46% RT) | **+1.30%** | **+1.61%** | +0.53% |
+| Win Rate | 59.7% | 57.1% | 56.2% |
+| Profit Factor | 1.89 | 1.82 | 1.23 |
+| CI Bootstrap 95% | [0.86, 2.69] | [0.87, 3.27] | [-0.66, 2.62] |
+| Mejor trade % | 3.3% | 3.3% | 3.3% |
 
-```bash
-pip install -r requirements.txt
+**Condición del evento:** Caída de 3 días con z-score < -2.0, mercado no en BEAR.
 
-# Run experiment 1: Moderate Pullback
-python run_experiment.py \
-  --event config/events/exp_001.yaml \
-  --universe config/universe.yaml
+## Hallazgos clave
 
-# View the report
-cat results/exp_001/summary.md
-```
+1. **Ningún edge sobrevive costos de acciones (1.96% RT).** Los costos de BYMA son prohibitivos para estrategias de entrada frecuente.
+2. **Tres familias de eventos tienen señal en USD** pero el edge es pequeño (1-2%).
+3. **EXP-05 es el más robusto:** mejor diversificación, CI sólido, incremental edge positivo.
+4. **EXP-04 tiene el mejor retorno absoluto** pero concentración excesiva en CEPU.BA.
+5. **Futuros ROFEX cambian completamente el panorama:** 6.4x más baratos que acciones.
 
-## Lab output
+## Pendientes
 
-Each experiment produces a decision: **REJECTED** | **RESEARCH** | **CANDIDATE**
-
-See `AGENTS.md` and `statistical_edge_lab_spec.md` for the full specification.
-
-## 5 initial experiments
-
-| ID | Name | Event |
-|----|------|-------|
-| EXP-001 | Moderate Pullback | -3% pullback in uptrend, price above SMA200 |
-| EXP-002 | Pullback With Volume | EXP-001 + volume > 1.5x avg |
-| EXP-003 | Volatility Compression | ATR < 25th percentile, price near 60d high |
-| EXP-004 | Breakout From Compression | EXP-003 + close above 20d high + volume |
-| EXP-005 | Extreme Decline | 3d return < -2σ, market not bear |
-
-## Architecture
-
-```
-├── config/          # YAML configs (universe, costs, events)
-├── src/             # Python modules (12 modules, 5 phases)
-├── data/            # Raw/processed data cache
-├── experiments/     # Human-defined experiment configs
-├── results/         # Generated reports (summary.md, metrics, charts)
-├── tests/           # pytest suite (40 tests)
-├── run_experiment.py
-└── statistical_edge_lab_spec.md  # Full specification
-```
-
-## Status
-
-✅ EXP-001 complete — 859 events, decision: RESEARCH  
-⬜ EXP-002 through EXP-005 pending
+- Parameter neighborhood para EXP-05 (z-score -1.5, -2.5)
+- Validación walk-forward del split temporal en el decision engine
+- Soporte para SHORT (futuros permiten ambas direcciones)
+- EXP-02 (Pullback With Volume) no se ejecutó por recomendación de Tom Hagen
