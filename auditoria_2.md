@@ -6,6 +6,22 @@
 **Test execution:** Not independently executed during this audit  
 **Status:** This document supersedes `auditoria.md`
 
+> ⚠️ **Nota post-auditoría:** Los commits `945f8da` y `d86e47a` (posteriores al commit auditado) 
+> implementaron varias correcciones señaladas en este documento, incluyendo:
+> - ATR percentile scale corregida (0-1, no 0-100) — §2.1
+> - distance_to_high operator corregido (>= -0.05) — §2.2
+> - Próximo-open horizonte corregido — §3.1
+> - MFE/MAE incluyen entry session — §3.2
+> - Adjusted OHLC usado en USD path — §3.3
+> - Métricas netas como canónicas — §4.1
+> - Holdout enforcement en decision engine — §4.3
+> - Primary horizon enforcement — §4.4
+> - Benchmark dolarizado para regímenes — §5
+> - CCL left join (preserva sesiones) — §8.1
+>
+> Ver `git log --oneline` para el detalle completo. Las secciones marcadas como
+> P0 deben verificarse contra el HEAD actual antes de asumir que siguen vigentes.
+
 ---
 
 # 1. Executive verdict
