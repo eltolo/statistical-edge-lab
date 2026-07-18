@@ -1,0 +1,29 @@
+# Statistical Edge Lab — .gitignore
+
+# Data cache (downloaded market data)
+data/raw/*.csv
+data/raw/*.parquet
+
+# Virtual environment
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Experiment results (generated artifacts)
+results/*/
+!results/.gitkeep
+
+# Environment
+.env
+secrets.env

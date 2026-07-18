@@ -1,0 +1,16 @@
+# Costos de transacción — Mercado Argentino (BYMA)
+# Basado en IOL: 0.665% comisión + derechos de mercado
+# Spec §13
+
+argentina:
+  commission_per_side: 0.007       # 0.7% comisión por lado (IOL real: 0.665%, redondeado)
+  market_fees_per_side: 0.0008     # 0.08% derechos de mercado + IVA
+  estimated_slippage_per_side: 0.002  # 0.2% slippage estimado
+  minimum_total_roundtrip: 0.015   # 1.5% mínimo round-trip total
+
+usa:
+  commission_per_side: 0.001       # 0.1% por lado (broker USA)
+  market_fees_per_side: 0.0001
+  estimated_slippage_per_side: 0.001
+
+default_market: argentina

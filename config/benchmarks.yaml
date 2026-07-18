@@ -1,0 +1,20 @@
+# Benchmarks de referencia
+
+benchmarks:
+  argentina:
+    primary: ^MERV
+    description: Índice MERVAL (BYMA)
+    source: yahoo
+    ticker: ^MERV
+
+  usa:
+    primary: SPY
+    description: S&P 500 ETF
+    source: yahoo
+
+  argentina_usd:
+    primary: ARGT
+    description: Argentina MSCI (USD)
+    source: yahoo
+
+default: ^MERV

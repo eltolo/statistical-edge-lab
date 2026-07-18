@@ -1,0 +1,31 @@
+# EXP-004: Breakout From Compression
+# Spec §18 — All EXP-003 conditions + close above 20d high + volume > 1.5x
+
+experiment:
+  id: exp_004
+  family: compression
+  description: "Breakout from volatility compression: EXP-003 + close above 20d high + volume > 1.5x"
+  hypothesis: "A breakout from low-volatility consolidation produces sustained directional movement."
+
+event:
+  conditions:
+    atr_percentile_60d:
+      operator: "<"
+      value: 25
+    distance_to_high_60d:
+      operator: "<"
+      value: 0.05
+    close_breaks_high_20d:
+      operator: "=="
+      value: 1.0
+    volume_ratio_20d:
+      operator: ">"
+      value: 1.5
+
+  cooldown_days: 10
+  forward_horizons: [1, 3, 5, 10, 20]
+
+validation:
+  discovery_pct: 60
+  validation_pct: 20
+  holdout_pct: 20

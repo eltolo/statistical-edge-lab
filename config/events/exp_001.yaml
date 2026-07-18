@@ -1,0 +1,29 @@
+# EXP-001: Moderate Pullback
+# Spec §18 — Positive 60-day trend, price above SMA200, 3d return -3% to -7%
+
+experiment:
+  id: exp_001
+  family: pullback
+  description: "Moderate pullback within an uptrend: price above SMA200, positive 60d trend, 3d retracement -3% to -7%"
+  hypothesis: "A moderate short-term decline inside an established uptrend produces favorable forward returns."
+
+event:
+  conditions:
+    close_above_sma_200:
+      operator: "=="
+      value: 1.0
+    return_60d:
+      operator: ">"
+      value: 0.10
+    # Three-day return less than -3%
+    return_3d:
+      operator: "<"
+      value: -0.03
+
+  cooldown_days: 10
+  forward_horizons: [1, 3, 5, 10, 20]
+
+validation:
+  discovery_pct: 60
+  validation_pct: 20
+  holdout_pct: 20
