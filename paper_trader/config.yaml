@@ -1,0 +1,55 @@
+# Extreme Decline Paper Trader
+# Strategy: z-score < -2.0 on large-cap US, not BEAR market, 10d holding
+# Executed via IOL USA: 0.35% + IVA per side = 0.847% RT
+
+strategy:
+  name: "extreme_decline_us"
+  description: "Extreme decline mean-reversion on 11 US large-cap stocks"
+  primary_horizon: 10
+
+tickers:
+  - AAPL
+  - NVDA
+  - MSFT
+  - GOOGL
+  - AMZN
+  - META
+  - TSLA
+  - JPM
+  - KO
+  - DIS
+  - V
+
+signals:
+  - name: "extreme_decline"
+    desc: "z-score < -2.0, not BEAR"
+    conditions:
+      - feature: return_3d_zscore
+        operator: "<"
+        value: -2.0
+      - feature: trend_regime
+        operator: "!="
+        value: "BEAR"
+  - name: "rsi_oversold"
+    desc: "RSI(14) < 20, not BEAR"
+    conditions:
+      - feature: rsi_14
+        operator: "<"
+        value: 20
+      - feature: trend_regime
+        operator: "!="
+        value: "BEAR"
+
+costs:
+  broker: "IOL_USA"
+  commission_per_side_pct: 0.4235  # 0.35% + IVA 21%
+  roundtrip_pct: 0.847
+
+position:
+  fixed_size_usd: 2000  # $2,000 per trade
+  max_concurrent: 15     # max open positions
+
+execution:
+  holding_sessions: 10
+  entry_mode: "next_open"  # signal at close → enter next day open
+  exit_mode: "close"       # exit at close of day 10
