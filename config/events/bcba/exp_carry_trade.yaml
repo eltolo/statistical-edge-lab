@@ -1,0 +1,42 @@
+# EXP-BCBA-02: Carry Trade Entry
+# Requires: Tasa de caución diaria from ConexAR (CONEXAR-019)
+# Hypothesis: When ARS money market rates spike (caución > 40% TNA),
+#   BCBA equities outperform as local investors rotate from fixed income
+#   to equity to capture the "carry unwind" rally.
+#
+# This is a uniquely Argentine phenomenon: high real rates create a
+# temporary equity repricing.
+
+experiment:
+  id: exp_bcba_002
+  family: carry_trade
+  description: "Caución rate spike → BCBA equity rally over 10-20d"
+  hypothesis: "When short-term ARS rates spike above normal levels, local capital rotates from money markets to equities, creating a predictable rally in BCBA stocks."
+
+event:
+  conditions:
+    - feature: caucion_tna
+      operator: ">"
+      value: 40.0
+
+    - feature: trend_regime
+      operator: "!="
+      value: "BEAR"
+
+  cooldown_sessions: 30
+  forward_horizons: [5, 10, 20]
+
+validation:
+  discovery_pct: 60
+  validation_pct: 20
+  holdout_pct: 20
+
+research:
+  primary_horizon: 10
+  secondary_horizons: [5, 20]
+
+data_requirements:
+  - caucion_daily: "caucion.duckdb, daily average TNA, 2015-2026"
+  - feature: "caucion_tna = avg daily caucion rate (TNA %)"
+  - note: "Signal from ARS money market, execute on BCBA equities"
+  - threshold_note: "40% TNA threshold is conservative; test 30/35/40/45"

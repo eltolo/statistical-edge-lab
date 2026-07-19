@@ -1,0 +1,40 @@
+# EXP-BCBA-03: CCL Compression Rally
+# Requires: CCL diario from ConexAR (CONEXAR-019)
+# Hypothesis: When CCL compresses (falls >3% over 5 days), BCBA equities
+#   rally as confidence returns to the ARS. This is the "stabilization
+#   effect" opposite of the CCL panic spike.
+#
+# This is the Milei-era signal: CCL going down = market loves it.
+
+experiment:
+  id: exp_bcba_003
+  family: ccl_compression
+  description: "CCL falling > 3% over 5d → BCBA equities rally"
+  hypothesis: "Sustained CCL compression (falling ARS risk premium) creates a positive feedback loop: lower CCL → higher confidence → more equity inflows → higher BCBA prices."
+
+event:
+  conditions:
+    - feature: ccl_return_5d
+      operator: "<"
+      value: -0.03
+
+    - feature: trend_regime
+      operator: "=="
+      value: "BULL"
+
+  cooldown_sessions: 30
+  forward_horizons: [5, 10, 20]
+
+validation:
+  discovery_pct: 60
+  validation_pct: 20
+  holdout_pct: 20
+
+research:
+  primary_horizon: 10
+  secondary_horizons: [5, 20]
+
+data_requirements:
+  - ccl_daily: "historico.duckdb → ccl_diario, 2015-2026 daily"
+  - feature: "ccl_return_5d = CCL 5-day pct change"
+  - note: "Opposite of exp_bcba_001 (CCL spike). Tests both directions."

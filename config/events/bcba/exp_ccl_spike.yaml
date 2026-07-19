@@ -1,0 +1,38 @@
+# EXP-BCBA-01: CCL Spike Mean-Reversion
+# Requires: CCL diario from ConexAR (CONEXAR-019)
+# Hypothesis: When CCL jumps >5% in a single day, BCBA stocks priced in USD
+#   overshoot and revert over the next 5-10 days. This captures the
+#   "devaluation panic → calm" cycle unique to Argentina.
+
+experiment:
+  id: exp_bcba_001
+  family: ccl_spike
+  description: "CCL spike > 5% in 1 day → BCBA USD mean-reversion over 5-10d"
+  hypothesis: "A large single-day CCL jump (>5%) creates a temporary overshoot in BCBA USD prices, which partially reverts as the panic subsides and the CCL stabilizes."
+
+event:
+  conditions:
+    - feature: ccl_return_1d
+      operator: ">"
+      value: 0.05
+
+    - feature: trend_regime
+      operator: "!="
+      value: "BEAR"
+
+  cooldown_sessions: 20
+  forward_horizons: [3, 5, 10, 20]
+
+validation:
+  discovery_pct: 60
+  validation_pct: 20
+  holdout_pct: 20
+
+research:
+  primary_horizon: 5
+  secondary_horizons: [3, 10, 20]
+
+data_requirements:
+  - ccl_daily: "historico.duckdb → ccl_diario, 2015-2026 daily"
+  - feature: "ccl_return_1d = CCL.pct_change()"
+  - note: "Signal from CCL macro, execute on BCBA equities (GGAL, YPFD, etc.)"
