@@ -184,6 +184,14 @@ def compute_all_features(
     # Volume
     if "volume" in result.columns:
         result["volume_ratio_20d"] = volume_ratio(result["volume"], 20)
+        result["volume_ratio_50d"] = volume_ratio(result["volume"], 50)
+
+    # Gap (open vs prev close)
+    result["gap_pct"] = (result["open"] / close.shift(1) - 1.0) * 100.0
+
+    # Consecutive down days
+    down = (close.diff() < 0).astype(int)
+    result["consecutive_down"] = down * (down.groupby((down != down.shift()).cumsum()).cumcount() + 1)
 
     # Distance from SMAs (in hard currency)
     result["dist_sma_20"] = distance_from_sma(close, 20)
